@@ -156,6 +156,33 @@ class TestBuildVideoArgs:
         assert "yadif_cuda=0" in vf
         assert "scale_cuda" in vf
 
+    def test_nvenc_sr_uses_experiment_winner(self, tmp_path):
+        engine = tmp_path / "2x-liveaction-span_720p_fp16.engine"
+        engine.write_bytes(b"engine")
+
+        with (
+            patch("ffmpeg_command._sr_engine_dir", str(tmp_path)),
+            patch(
+                "ffmpeg_command._load_settings",
+                return_value={"sr_model": "2x-liveaction-span"},
+            ),
+        ):
+            pre, post = _build_video_args(
+                copy_video=False,
+                hw="nvenc+software",
+                deinterlace=False,
+                use_hw_pipeline=False,
+                max_resolution="4k",
+                quality="high",
+                source_height=720,
+            )
+
+        assert pre[-2:] == ["-filter_threads", "4"]
+        assert post[post.index("-preset") + 1] == "p5"
+        assert post[post.index("-bf") + 1] == "0"
+        assert "-rc-lookahead" not in post
+        assert "dnn_processing=" in post[post.index("-vf") + 1]
+
     def test_vaapi_filters(self):
         """Test VAAPI uses VAAPI filters."""
         pre, post = _build_video_args(
@@ -212,6 +239,41 @@ class TestBuildVideoArgs:
             quality=quality,
         )
         assert expected_qp in post
+
+    def test_sr_live_hls_uses_two_second_segments(self, tmp_path):
+        engine = tmp_path / "2x-liveaction-span_720p_fp16.engine"
+        engine.write_bytes(b"engine")
+        media_info = MediaInfo(
+            video_codec="h264",
+            audio_codec="aac",
+            pix_fmt="yuv420p",
+            audio_channels=2,
+            audio_sample_rate=48000,
+            audio_profile="LC",
+            height=720,
+        )
+
+        with (
+            patch("ffmpeg_command._sr_engine_dir", str(tmp_path)),
+            patch(
+                "ffmpeg_command._load_settings",
+                return_value={
+                    "sr_model": "2x-liveaction-span",
+                    "live_dvr_mins": 0,
+                },
+            ),
+        ):
+            command = build_hls_ffmpeg_cmd(
+                "https://example.test/live.m3u8",
+                "nvenc+software",
+                str(tmp_path / "output"),
+                media_info=media_info,
+                max_resolution="4k",
+                deinterlace_fallback=False,
+            )
+
+        assert command[command.index("-hls_time") + 1] == "2"
+        assert command[command.index("-hls_list_size") + 1] == "15"
 
     def test_invalid_hw_raises(self):
         """Test invalid hardware raises ValueError."""

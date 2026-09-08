@@ -37,6 +37,8 @@ def _parse_hw(hw: HwAccel) -> tuple[str, str]:
 
 # Timing constants
 _HLS_SEGMENT_DURATION_SEC = 3.0  # Short segments for faster startup/seeking
+_SR_HLS_SEGMENT_DURATION_SEC = 2.0
+_SR_FILTER_THREADS = 4
 _PROBE_CACHE_TTL_SEC = 3_600
 _SERIES_PROBE_CACHE_TTL_SEC = 7 * 24 * 3_600  # 7 days
 _PROBE_TIMEOUT_SEC = 30
@@ -978,7 +980,14 @@ def _build_video_args(
                 # SR path: CPU decode -> deinterlace -> SR (GPU) -> encode
                 # SR filter ends with scale_cuda, outputs CUDA frames ready for nvenc
                 # Need init_hw_device for TensorRT dnn_processing to use GPU
-                pre = ["-init_hw_device", "cuda=cu", "-filter_hw_device", "cu"]
+                pre = [
+                    "-init_hw_device",
+                    "cuda=cu",
+                    "-filter_hw_device",
+                    "cu",
+                    "-filter_threads",
+                    str(_SR_FILTER_THREADS),
+                ]
                 deint = "yadif=0," if deinterlace else ""
                 vf = f"{deint}{sr_filter}"
             elif is_hdr:
@@ -992,9 +1001,8 @@ def _build_video_args(
                 deint = "yadif_cuda=0," if deinterlace else ""  # GPU deinterlace after upload
                 tonemap = "format=nv12,hwupload_cuda,"
                 vf = f"{tonemap}{deint}{scale}"
-        preset = "p4" if deinterlace or sr_filter else "p2"
+        preset = "p5" if sr_filter else ("p4" if deinterlace else "p2")
         encoder = "h264_nvenc"
-        # Lookahead for better quality, B-frames for compression, AQ for adaptive quantization
         enc_opts = [
             "-preset",
             preset,
@@ -1002,15 +1010,15 @@ def _build_video_args(
             "constqp",
             "-qp",
             str(qp),
-            "-rc-lookahead",
-            "32",
             "-bf",
-            "3",
+            "0" if sr_filter else "3",
             "-spatial-aq",
             "1",
             "-temporal-aq",
             "1",
         ]
+        if not sr_filter:
+            enc_opts[6:6] = ["-rc-lookahead", "32"]
 
     elif enc_type == "amf":
         # AMF has no hardware decode - always uses fallback for decode/filter
@@ -1152,14 +1160,16 @@ def _build_audio_args(*, copy_audio: bool, audio_sample_rate: int) -> list[str]:
     return ["-c:a", "aac", "-ac", "2", "-ar", rate, "-b:a", "192k", "-profile:a", "aac_low"]
 
 
-def get_live_hls_list_size() -> int:
+def get_live_hls_list_size(
+    segment_duration: float = _HLS_SEGMENT_DURATION_SEC,
+) -> int:
     """Get hls_list_size for live streams based on DVR setting."""
     dvr_mins = _load_settings().get("live_dvr_mins", 0)
     if dvr_mins <= 0:
         # Default buffer when DVR disabled
-        return int(DEFAULT_LIVE_BUFFER_SECS / _HLS_SEGMENT_DURATION_SEC)
+        return int(DEFAULT_LIVE_BUFFER_SECS / segment_duration)
     # DVR enabled: calculate segments from minutes
-    return int(dvr_mins * 60 / _HLS_SEGMENT_DURATION_SEC)
+    return int(dvr_mins * 60 / segment_duration)
 
 
 def build_hls_ffmpeg_cmd(
@@ -1236,6 +1246,10 @@ def build_hls_ffmpeg_cmd(
         copy_audio=copy_audio,
         audio_sample_rate=media_info.audio_sample_rate if media_info else 0,
     )
+    sr_applied = any("dnn_processing=" in arg for arg in video_post)
+    segment_duration = (
+        _SR_HLS_SEGMENT_DURATION_SEC if sr_applied else _HLS_SEGMENT_DURATION_SEC
+    )
 
     # Base args
     cmd = [
@@ -1308,9 +1322,9 @@ def build_hls_ffmpeg_cmd(
             "-f",
             "hls",
             "-hls_time",
-            str(int(_HLS_SEGMENT_DURATION_SEC)),
+            str(int(segment_duration)),
             "-hls_list_size",
-            "0" if is_vod else str(get_live_hls_list_size()),
+            "0" if is_vod else str(get_live_hls_list_size(segment_duration)),
             "-hls_segment_filename",
             f"{output_dir}/{SEG_PREFIX}%03d.ts",
         ]
