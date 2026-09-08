@@ -36,6 +36,7 @@ through their IPTV providers.
 ## Features
 
 - **Live TV** with EPG grid guide
+- **Experimental Apple apps** for iPhone, Apple TV, and macOS
 - **Native player gateway** - Use the configured live channels from Xtream-compatible players
 - **Movies & Series** with metadata, seasons, episodes
 - **AI Upscale** - Real-time 4x upscaling via TensorRT (720p → 4K @ 85fps)
@@ -46,6 +47,23 @@ through their IPTV providers.
 - **Resume playback** for VOD content
 - **Responsive** - works on desktop, tablet, mobile
 - **Keyboard navigation** - 10-foot UI friendly
+
+### Experimental Apple Apps
+
+Native SwiftUI clients for iPhone, Apple TV, and macOS are available under
+[`apple/`](apple/). This work is experimental and the UI and setup may change.
+
+To try them:
+
+```bash
+cd apple
+xcodegen generate
+open neTV.xcodeproj
+```
+
+In Xcode, select the iOS, tvOS, or macOS scheme, run it, then sign in with your
+existing neTV server URL and account. XcodeGen and Xcode 15 or later are
+required.
 
 ### Transcoding
 

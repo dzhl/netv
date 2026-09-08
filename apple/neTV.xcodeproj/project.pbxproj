@@ -1,0 +1,516 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0466A9AB29E672F13C7D5A2A /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E704D3C57BDFB4F6FDD30C /* MainView.swift */; };
+		12DCEFAE910D6D432D94E8A6 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3958B244A2ACA974B7185AAC /* SettingsView.swift */; };
+		18743117F1B417719688CB42 /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF418659EEBD9790995079B8 /* PlayerView.swift */; };
+		2597B1BAE5C70DBC50E10ED8 /* GuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0778EA7D01B52352E0463BDB /* GuideView.swift */; };
+		3765362ED1F2CFBF333E4B90 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9933493BF44471BA52A4C230 /* Theme.swift */; };
+		38C7DE6A3250FE9F59CCBB8E /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 460CB8F88760F5CB2D07448B /* LoginView.swift */; };
+		400E9065B355878E4DCB0E5D /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE23B81DF0270B906CF16FF4 /* AppModel.swift */; };
+		4248EE1DAA96BC3E126EF63F /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01084A7917CC65609D2C114 /* Models.swift */; };
+		44C9F1AB4568216008319E83 /* WatchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4536D56EAE4CD531CFFA607 /* WatchView.swift */; };
+		46BA207425AEB0AA34D5DF48 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D09344AAACA4E76DC669710 /* APIClient.swift */; };
+		470CEF614F907911E864469B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3958B244A2ACA974B7185AAC /* SettingsView.swift */; };
+		4AAB32ACB334A55D5AD7E4F5 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E704D3C57BDFB4F6FDD30C /* MainView.swift */; };
+		4DDF4C18DDD375D68D128C62 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D3B4028C8C318C2931DBBE3 /* RootView.swift */; };
+		5D0F5884D04FBE80823FCF86 /* GuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0778EA7D01B52352E0463BDB /* GuideView.swift */; };
+		5E18B9EAE19F678C84C728B2 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE23B81DF0270B906CF16FF4 /* AppModel.swift */; };
+		5ECF367C77209DDD6F63E838 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01084A7917CC65609D2C114 /* Models.swift */; };
+		6A4A842F0F279A319C955E9A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3958B244A2ACA974B7185AAC /* SettingsView.swift */; };
+		6F1AC484BC6DE4BCF6B8DB15 /* GuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0778EA7D01B52352E0463BDB /* GuideView.swift */; };
+		7B05462483C1F7D1B5E8EBDE /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D3B4028C8C318C2931DBBE3 /* RootView.swift */; };
+		8436C21508123B0ED2C81259 /* neTVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C50C8A840BD4E6B1B2A3713F /* neTVApp.swift */; };
+		8ED49DCCE97FCC932A797A94 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 460CB8F88760F5CB2D07448B /* LoginView.swift */; };
+		90B6AEA99BEF92321B96A411 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D3B4028C8C318C2931DBBE3 /* RootView.swift */; };
+		976BCD3DC0810015CAA7F9C1 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D09344AAACA4E76DC669710 /* APIClient.swift */; };
+		A0CCE0A7FFE426B22F136FD7 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D09344AAACA4E76DC669710 /* APIClient.swift */; };
+		A3F9180370ED86E436D1BDB6 /* neTVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C50C8A840BD4E6B1B2A3713F /* neTVApp.swift */; };
+		BA8DEA29F0257DF5FB6A4A83 /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF418659EEBD9790995079B8 /* PlayerView.swift */; };
+		BCF3BFC944541A6932F0048A /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9933493BF44471BA52A4C230 /* Theme.swift */; };
+		C1C70EA80E237235D6D43423 /* neTVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C50C8A840BD4E6B1B2A3713F /* neTVApp.swift */; };
+		CA81A1B88771ABC3419C4F69 /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF418659EEBD9790995079B8 /* PlayerView.swift */; };
+		CB5F76CE01BCB18691E574F6 /* WatchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4536D56EAE4CD531CFFA607 /* WatchView.swift */; };
+		CD883F4FD417DFC0A9299054 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3E704D3C57BDFB4F6FDD30C /* MainView.swift */; };
+		E04B81CBBAAB80F0DC6C564A /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9933493BF44471BA52A4C230 /* Theme.swift */; };
+		E94F69C0C0C9BE65DA4B4DE0 /* WatchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4536D56EAE4CD531CFFA607 /* WatchView.swift */; };
+		F964A819BFB30506900B13C6 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE23B81DF0270B906CF16FF4 /* AppModel.swift */; };
+		FF3A0F0A66050DD0923E5EF7 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 460CB8F88760F5CB2D07448B /* LoginView.swift */; };
+		FF748604C859179B61D441AC /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01084A7917CC65609D2C114 /* Models.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0778EA7D01B52352E0463BDB /* GuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuideView.swift; sourceTree = "<group>"; };
+		0D09344AAACA4E76DC669710 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		3958B244A2ACA974B7185AAC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		460CB8F88760F5CB2D07448B /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		59DB0165755DD30AACEA56CC /* neTV-macOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "neTV-macOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		7015161F973D718DB6D8890D /* neTV-iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "neTV-iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		8D3B4028C8C318C2931DBBE3 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		9933493BF44471BA52A4C230 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		A01084A7917CC65609D2C114 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		AE23B81DF0270B906CF16FF4 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		C4536D56EAE4CD531CFFA607 /* WatchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchView.swift; sourceTree = "<group>"; };
+		C50C8A840BD4E6B1B2A3713F /* neTVApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = neTVApp.swift; sourceTree = "<group>"; };
+		DF418659EEBD9790995079B8 /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
+		E3E704D3C57BDFB4F6FDD30C /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
+		EA78A96CB4D359BADECD164C /* neTV-tvOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "neTV-tvOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		27715AA4D010812899981ABD /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				0D09344AAACA4E76DC669710 /* APIClient.swift */,
+				AE23B81DF0270B906CF16FF4 /* AppModel.swift */,
+				0778EA7D01B52352E0463BDB /* GuideView.swift */,
+				460CB8F88760F5CB2D07448B /* LoginView.swift */,
+				E3E704D3C57BDFB4F6FDD30C /* MainView.swift */,
+				A01084A7917CC65609D2C114 /* Models.swift */,
+				C50C8A840BD4E6B1B2A3713F /* neTVApp.swift */,
+				DF418659EEBD9790995079B8 /* PlayerView.swift */,
+				8D3B4028C8C318C2931DBBE3 /* RootView.swift */,
+				3958B244A2ACA974B7185AAC /* SettingsView.swift */,
+				9933493BF44471BA52A4C230 /* Theme.swift */,
+				C4536D56EAE4CD531CFFA607 /* WatchView.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		54FC6BB962179C482F4976CE /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				7015161F973D718DB6D8890D /* neTV-iOS.app */,
+				59DB0165755DD30AACEA56CC /* neTV-macOS.app */,
+				EA78A96CB4D359BADECD164C /* neTV-tvOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AF2F7B2D24C7FB060DCF97D3 = {
+			isa = PBXGroup;
+			children = (
+				27715AA4D010812899981ABD /* Shared */,
+				54FC6BB962179C482F4976CE /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		52F388A2F260A00469CA3815 /* neTV-macOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CFF911CA660380D46A6C32EB /* Build configuration list for PBXNativeTarget "neTV-macOS" */;
+			buildPhases = (
+				AE8E48CEB0B397A3D32A2597 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "neTV-macOS";
+			packageProductDependencies = (
+			);
+			productName = "neTV-macOS";
+			productReference = 59DB0165755DD30AACEA56CC /* neTV-macOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+		9BCA086C4DB8D2ED267C0D2A /* neTV-iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 42A2ACACD9738C586E8E48AD /* Build configuration list for PBXNativeTarget "neTV-iOS" */;
+			buildPhases = (
+				AB07C405F884011E7FA751A6 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "neTV-iOS";
+			packageProductDependencies = (
+			);
+			productName = "neTV-iOS";
+			productReference = 7015161F973D718DB6D8890D /* neTV-iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A0156F88536F20FD21290F82 /* neTV-tvOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4FDA319F187E7E209093F8B9 /* Build configuration list for PBXNativeTarget "neTV-tvOS" */;
+			buildPhases = (
+				295A958EACBDC1C193F14576 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "neTV-tvOS";
+			packageProductDependencies = (
+			);
+			productName = "neTV-tvOS";
+			productReference = EA78A96CB4D359BADECD164C /* neTV-tvOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F894E14A1F8F9D384E1AE91A /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+			};
+			buildConfigurationList = 79002D7405222D9CD875D108 /* Build configuration list for PBXProject "neTV" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = AF2F7B2D24C7FB060DCF97D3;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				9BCA086C4DB8D2ED267C0D2A /* neTV-iOS */,
+				52F388A2F260A00469CA3815 /* neTV-macOS */,
+				A0156F88536F20FD21290F82 /* neTV-tvOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		295A958EACBDC1C193F14576 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				976BCD3DC0810015CAA7F9C1 /* APIClient.swift in Sources */,
+				F964A819BFB30506900B13C6 /* AppModel.swift in Sources */,
+				5D0F5884D04FBE80823FCF86 /* GuideView.swift in Sources */,
+				8ED49DCCE97FCC932A797A94 /* LoginView.swift in Sources */,
+				0466A9AB29E672F13C7D5A2A /* MainView.swift in Sources */,
+				4248EE1DAA96BC3E126EF63F /* Models.swift in Sources */,
+				18743117F1B417719688CB42 /* PlayerView.swift in Sources */,
+				90B6AEA99BEF92321B96A411 /* RootView.swift in Sources */,
+				470CEF614F907911E864469B /* SettingsView.swift in Sources */,
+				E04B81CBBAAB80F0DC6C564A /* Theme.swift in Sources */,
+				E94F69C0C0C9BE65DA4B4DE0 /* WatchView.swift in Sources */,
+				C1C70EA80E237235D6D43423 /* neTVApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AB07C405F884011E7FA751A6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				46BA207425AEB0AA34D5DF48 /* APIClient.swift in Sources */,
+				400E9065B355878E4DCB0E5D /* AppModel.swift in Sources */,
+				6F1AC484BC6DE4BCF6B8DB15 /* GuideView.swift in Sources */,
+				FF3A0F0A66050DD0923E5EF7 /* LoginView.swift in Sources */,
+				4AAB32ACB334A55D5AD7E4F5 /* MainView.swift in Sources */,
+				FF748604C859179B61D441AC /* Models.swift in Sources */,
+				CA81A1B88771ABC3419C4F69 /* PlayerView.swift in Sources */,
+				7B05462483C1F7D1B5E8EBDE /* RootView.swift in Sources */,
+				12DCEFAE910D6D432D94E8A6 /* SettingsView.swift in Sources */,
+				BCF3BFC944541A6932F0048A /* Theme.swift in Sources */,
+				44C9F1AB4568216008319E83 /* WatchView.swift in Sources */,
+				A3F9180370ED86E436D1BDB6 /* neTVApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AE8E48CEB0B397A3D32A2597 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A0CCE0A7FFE426B22F136FD7 /* APIClient.swift in Sources */,
+				5E18B9EAE19F678C84C728B2 /* AppModel.swift in Sources */,
+				2597B1BAE5C70DBC50E10ED8 /* GuideView.swift in Sources */,
+				38C7DE6A3250FE9F59CCBB8E /* LoginView.swift in Sources */,
+				CD883F4FD417DFC0A9299054 /* MainView.swift in Sources */,
+				5ECF367C77209DDD6F63E838 /* Models.swift in Sources */,
+				BA8DEA29F0257DF5FB6A4A83 /* PlayerView.swift in Sources */,
+				4DDF4C18DDD375D68D128C62 /* RootView.swift in Sources */,
+				6A4A842F0F279A319C955E9A /* SettingsView.swift in Sources */,
+				3765362ED1F2CFBF333E4B90 /* Theme.swift in Sources */,
+				CB5F76CE01BCB18691E574F6 /* WatchView.swift in Sources */,
+				8436C21508123B0ED2C81259 /* neTVApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		1455786DD9EBF4374A0FA80B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = macOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.netv.macos;
+				PRODUCT_NAME = neTV;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		250A3C035D603E2825D4A591 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TVOS_DEPLOYMENT_TARGET = 17.0;
+			};
+			name = Release;
+		};
+		3418EFF97A91BC10931C4919 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TVOS_DEPLOYMENT_TARGET = 17.0;
+			};
+			name = Debug;
+		};
+		7F136FFEF5136B30BC0975FD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = iOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.netv.ios;
+				PRODUCT_NAME = neTV;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		8EB2016A7C3258A2DB6010C1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
+				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
+				INFOPLIST_FILE = tvOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.netv.tvos;
+				PRODUCT_NAME = neTV;
+				SDKROOT = appletvos;
+				TARGETED_DEVICE_FAMILY = 3;
+			};
+			name = Release;
+		};
+		90990061DD3053B6EAFC0C07 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = macOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.netv.macos;
+				PRODUCT_NAME = neTV;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		D0108E37776C458CC9E69FF1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "App Icon & Top Shelf Image";
+				ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME = LaunchImage;
+				INFOPLIST_FILE = tvOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.netv.tvos;
+				PRODUCT_NAME = neTV;
+				SDKROOT = appletvos;
+				TARGETED_DEVICE_FAMILY = 3;
+			};
+			name = Debug;
+		};
+		FB5FB34693FD3F26BF8AC137 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = iOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.netv.ios;
+				PRODUCT_NAME = neTV;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		42A2ACACD9738C586E8E48AD /* Build configuration list for PBXNativeTarget "neTV-iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FB5FB34693FD3F26BF8AC137 /* Debug */,
+				7F136FFEF5136B30BC0975FD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		4FDA319F187E7E209093F8B9 /* Build configuration list for PBXNativeTarget "neTV-tvOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D0108E37776C458CC9E69FF1 /* Debug */,
+				8EB2016A7C3258A2DB6010C1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		79002D7405222D9CD875D108 /* Build configuration list for PBXProject "neTV" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3418EFF97A91BC10931C4919 /* Debug */,
+				250A3C035D603E2825D4A591 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		CFF911CA660380D46A6C32EB /* Build configuration list for PBXNativeTarget "neTV-macOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				90990061DD3053B6EAFC0C07 /* Debug */,
+				1455786DD9EBF4374A0FA80B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = F894E14A1F8F9D384E1AE91A /* Project object */;
+}
