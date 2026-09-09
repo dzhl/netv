@@ -58,13 +58,14 @@ if [ -e /dev/dri/renderD128 ]; then
 fi
 
 # Build TensorRT engines if missing (first run only)
-# Builds both recommended models: 4x-compact (quality) and 2x-liveaction-span (fast)
-if ! ls /models/4x-compact_*p_fp16.engine >/dev/null 2>&1; then
+# Builds both recommended models: 4x-compact and 2x-nomosuni-compact
+if ! ls /models/4x-compact_*p_fp16.engine >/dev/null 2>&1 ||
+   ! ls /models/2x-nomosuni-compact_*p_fp16.engine >/dev/null 2>&1; then
     echo "========================================"
     echo "AI Upscale: First start detected"
     echo "========================================"
     echo "Building TensorRT engines for your GPU..."
-    echo "Models: 4x-compact (quality), 2x-liveaction-span (fast)"
+    echo "Models: 4x-compact (720p), 2x-nomosuni-compact (1080p)"
     echo "This only happens once (cached in /models volume)."
     echo ""
     # Run as netv user so files have correct ownership
@@ -82,5 +83,8 @@ if ! ls /models/4x-compact_*p_fp16.engine >/dev/null 2>&1; then
     fi
 fi
 
-# Drop to netv user and run the app
+# Drop to netv user and run the selected app
+if [ "${NETV_MODE:-web}" = "gateway" ]; then
+    exec gosu netv python3 gateway.py --port "${NETV_GATEWAY_PORT:-8100}"
+fi
 exec gosu netv python3 main.py --port "${NETV_PORT:-8000}" ${NETV_HTTPS:+--https}

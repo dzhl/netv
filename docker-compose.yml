@@ -74,6 +74,38 @@ services:
       start_period: 10s
       retries: 3
 
+  # NVIDIA-capable gateway on the standard port. It follows the AI Upscale
+  # setting from the web UI and uses passthrough when no model is selected.
+  # Stop netv-gateway before starting this alternative service.
+  netv-gateway-upscale:
+    build:
+      context: .
+      dockerfile: Dockerfile.ai_upscale
+    image: netv-ai-upscale
+    container_name: netv-gateway
+    profiles:
+      - upscale
+    ports:
+      - "${NETV_GATEWAY_PORT:-8100}:8100"
+    environment:
+      - NETV_MODE=gateway
+      - NETV_GATEWAY_PORT=8100
+      - NETV_GATEWAY_PUBLIC_URL=${NETV_GATEWAY_PUBLIC_URL:-}
+      - NETV_GATEWAY_TRUSTED_PROXIES=${NETV_GATEWAY_TRUSTED_PROXIES:-127.0.0.1}
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./cache:/app/cache
+      - netv-models:/models
+      - /etc/localtime:/etc/localtime:ro
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   # NVIDIA GPU: docker compose --profile nvidia up -d
   netv-nvidia:
     extends:
@@ -88,3 +120,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+volumes:
+  netv-models:

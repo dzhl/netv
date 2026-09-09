@@ -42,6 +42,8 @@ dev = [
 ai_upscale = [
     "torch>=2.0",
     "onnx>=1.14",
+    "onnxconverter-common>=1.14",
+    "safetensors>=0.4",
     "tensorrt>=10.0",
 ]
 

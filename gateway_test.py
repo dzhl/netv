@@ -228,6 +228,125 @@ def test_playlist_contains_only_local_playback_urls(gateway_client):
     assert 'group-title="News"' in response.text
 
 
+def test_upscale_setting_controls_gateway_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    engine = tmp_path / "2x-liveaction-span_720p_fp16.engine"
+    engine.write_bytes(b"engine")
+    monkeypatch.setattr(gateway, "_UPSCALE_ENGINE_DIR", tmp_path)
+    settings = {
+        "sr_model": "",
+        "transcode_hw": "nvenc+software",
+        "max_resolution": "4k",
+        "quality": "high",
+    }
+    monkeypatch.setattr(gateway.cache, "load_server_settings", lambda: settings)
+
+    assert gateway._upscale_enabled() is False
+
+    settings["sr_model"] = "2x-liveaction-span"
+
+    assert gateway._upscale_enabled() is True
+    assert gateway._upscale_settings()["max_resolution"] == "4k"
+
+
+def test_disabled_upscale_accepts_480p_max_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(gateway, "_UPSCALE_ENGINE_DIR", tmp_path)
+    monkeypatch.setattr(
+        gateway.cache,
+        "load_server_settings",
+        lambda: {
+            "sr_model": "",
+            "transcode_hw": "nvenc+software",
+            "max_resolution": "480p",
+            "quality": "high",
+        },
+    )
+
+    assert gateway._upscale_enabled() is False
+    assert gateway._upscale_settings()["max_resolution"] == "480p"
+
+
+def test_upscale_playlist_uses_hls_urls(
+    gateway_client,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, _ = gateway_client
+    monkeypatch.setattr(gateway, "_upscale_enabled", lambda: True)
+
+    response = client.get(
+        "/get.php",
+        params={"username": "player", "password": "local-pass", "output": "m3u8"},
+    )
+
+    assert response.status_code == 200
+    assert "http://testserver/live/player/local-pass/41.m3u8" in response.text
+
+
+def test_upscale_live_stream_starts_session(
+    gateway_client,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client, _ = gateway_client
+    monkeypatch.setattr(gateway, "_upscale_enabled", lambda: True)
+    monkeypatch.setattr(
+        gateway,
+        "_resolve_upstream",
+        lambda _stream, _extension: "https://provider.example/live/987.ts",
+    )
+    start = AsyncMock(return_value={"session_id": "upscale-session"})
+    monkeypatch.setattr(gateway.ffmpeg_session, "start_transcode", start)
+
+    response = client.get(
+        "/live/player/local-pass/41.m3u8",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "/upscale/upscale-session/stream.m3u8"
+    start.assert_awaited_once()
+    await_args = start.await_args
+    assert await_args is not None
+    assert await_args.args[0] == "https://provider.example/live/987.ts"
+    assert await_args.kwargs["content_type"] == "live"
+    assert await_args.kwargs["username"] == "player"
+
+
+def test_upscale_files_are_served_from_session(
+    gateway_client,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    client, _ = gateway_client
+    (tmp_path / "stream.m3u8").write_text(
+        "#EXTM3U\n#EXTINF:2.0,\nsegment000.ts\n"
+    )
+    (tmp_path / "segment000.ts").write_bytes(b"video")
+    monkeypatch.setattr(
+        gateway.ffmpeg_session,
+        "get_session",
+        lambda _session_id: {"dir": str(tmp_path)},
+    )
+    touch = MagicMock(return_value=True)
+    monkeypatch.setattr(gateway.ffmpeg_session, "touch_session", touch)
+
+    manifest = client.get("/upscale/session/stream.m3u8")
+    segment = client.get("/upscale/session/segment000.ts")
+
+    assert manifest.status_code == 200
+    assert manifest.headers["content-type"].startswith(
+        "application/vnd.apple.mpegurl"
+    )
+    assert "segment000.ts" in manifest.text
+    assert segment.status_code == 200
+    assert segment.content == b"video"
+    assert touch.call_count == 2
+
+
 def test_user_category_restrictions_apply_to_gateway(gateway_client):
     client, _ = gateway_client
     assert auth.set_user_limits("player", unavailable_groups=["cat:src_1_news"])

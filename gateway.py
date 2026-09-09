@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import argparse
@@ -18,7 +20,13 @@ import urllib.error
 import urllib.parse
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 
 from gateway_catalog import CatalogSnapshot, GatewayCatalog, GatewayStream
 from gateway_epg import EpgUnavailableError, build_filtered_xmltv
@@ -27,11 +35,15 @@ from util import safe_urlopen
 
 import auth
 import cache
+import ffmpeg_command
+import ffmpeg_session
 
 
 log = logging.getLogger(__name__)
-app = FastAPI(title="neTV Native Player Gateway", docs_url=None, redoc_url=None)
 catalog = GatewayCatalog()
+_UPSCALE_ENGINE_DIR = Path(
+    os.environ.get("SR_ENGINE_DIR", Path.home() / "ffmpeg_build/models")
+)
 _PASSTHROUGH_ACTIONS = {
     "get_vod_categories",
     "get_vod_streams",
@@ -44,6 +56,96 @@ _MAX_LOGIN_FAILURES = 10
 _MAX_GLOBAL_LOGIN_FAILURES = 100
 _MAX_AUTH_CACHE_ENTRIES = 1024
 _MAX_FAILURE_CLIENTS = 1024
+
+
+def _available_upscale_models() -> list[str]:
+    if not _UPSCALE_ENGINE_DIR.exists():
+        return []
+    models = {
+        engine.stem.rsplit("_", 2)[0]
+        for engine in _UPSCALE_ENGINE_DIR.glob("*_*p_fp16.engine")
+        if len(engine.stem.rsplit("_", 2)) == 3
+    }
+    return sorted(
+        models,
+        key=lambda model: (
+            model != "2x-nomosuni-compact",
+            model != "4x-compact",
+            model,
+        ),
+    )
+
+
+def _upscale_settings() -> dict[str, Any]:
+    settings = cache.load_server_settings()
+    available_models = _available_upscale_models()
+    configured_model = str(settings.get("sr_model") or "").strip()
+    if configured_model and configured_model not in available_models:
+        raise RuntimeError(
+            f"Configured AI Upscale model {configured_model!r} is not installed; "
+            f"available models: {', '.join(available_models) or 'none'}"
+        )
+    upscale_settings = {
+        **settings,
+        "transcode_hw": str(settings.get("transcode_hw") or "nvenc+software"),
+        "max_resolution": str(settings.get("max_resolution") or "1080p"),
+        "quality": str(settings.get("quality") or "high"),
+        "sr_model": configured_model,
+    }
+    if upscale_settings["max_resolution"] not in ("4k", "1080p", "720p", "480p"):
+        raise RuntimeError(
+            "Configured max_resolution must be one of: 4k, 1080p, 720p, 480p"
+        )
+    if upscale_settings["quality"] not in ("high", "medium", "low"):
+        raise RuntimeError(
+            "Configured quality must be one of: high, medium, low"
+        )
+    return upscale_settings
+
+
+def _upscale_enabled() -> bool:
+    return bool(_upscale_settings()["sr_model"])
+
+
+async def _cleanup_upscale_sessions() -> None:
+    while True:
+        await asyncio.sleep(60)
+        await asyncio.to_thread(ffmpeg_session.cleanup_expired_sessions)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    ffmpeg_command.init(
+        _upscale_settings,
+        sr_engine_dir=str(_UPSCALE_ENGINE_DIR),
+    )
+    ffmpeg_session.cleanup_and_recover_sessions()
+    settings = _upscale_settings()
+    if settings["sr_model"]:
+        log.info(
+            "Native upscaling enabled: model=%s target=%s hw=%s",
+            settings["sr_model"],
+            settings["max_resolution"],
+            settings["transcode_hw"],
+        )
+    else:
+        log.info("Native upscaling disabled; gateway will use passthrough")
+    cleanup_task = asyncio.create_task(_cleanup_upscale_sessions())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cleanup_task
+        ffmpeg_session.shutdown()
+
+
+app = FastAPI(
+    title="neTV Native Player Gateway",
+    docs_url=None,
+    redoc_url=None,
+    lifespan=lifespan,
+)
 
 
 class GatewayAuthenticator:
@@ -143,7 +245,7 @@ def _server_info(request: Request, username: str, password: str) -> dict[str, An
             "active_cons": "0",
             "created_at": "0",
             "max_connections": "1",
-            "allowed_output_formats": ["ts"],
+            "allowed_output_formats": ["m3u8"] if _upscale_enabled() else ["ts"],
         },
         "server_info": {
             "url": url.hostname or "localhost",
@@ -215,7 +317,23 @@ def _auth_failure() -> JSONResponse:
 
 @app.get("/healthz")
 async def healthcheck() -> dict[str, str]:
+    if _upscale_enabled():
+        return {"status": "ok", "mode": "upscale"}
     return {"status": "ok"}
+
+
+@app.get("/capabilities")
+async def capabilities() -> dict[str, Any]:
+    settings = _upscale_settings()
+    upscale = bool(settings["sr_model"])
+    return {
+        "upscale": upscale,
+        "models": _available_upscale_models(),
+        "selected_model": settings["sr_model"],
+        "max_resolution": settings["max_resolution"],
+        "quality": settings["quality"],
+        "output_format": "hls" if upscale else "mpegts",
+    }
 
 
 @app.get("/player_api.php")
@@ -291,8 +409,9 @@ async def playlist(
         return Response("Invalid username or password\n", status_code=401, media_type="text/plain")
     if type not in ("m3u", "m3u_plus"):
         raise HTTPException(400, "Unsupported playlist type")
-    if output not in ("", "ts", "mpegts"):
-        raise HTTPException(400, "Only MPEG-TS output is currently supported")
+    allowed_outputs = ("", "ts", "mpegts", "m3u8", "hls")
+    if output not in allowed_outputs:
+        raise HTTPException(400, "Unsupported playlist output")
     base_url = _public_base_url(request)
     encoded_user = urllib.parse.quote(username, safe="")
     encoded_password = urllib.parse.quote(password, safe="")
@@ -303,6 +422,7 @@ async def playlist(
         str(category["category_id"]): str(category["category_name"])
         for category in snapshot.categories
     }
+    extension = "m3u8" if _upscale_enabled() else "ts"
     for stream in _visible_streams(username, snapshot):
         info = stream.public
         group = categories.get(str(info["category_id"]), "Uncategorized")
@@ -316,7 +436,7 @@ async def playlist(
             )
         )
         lines.append(
-            f"{base_url}/live/{encoded_user}/{encoded_password}/{stream.local_id}.ts"
+            f"{base_url}/live/{encoded_user}/{encoded_password}/{stream.local_id}.{extension}"
         )
     return Response("\n".join(lines) + "\n", media_type="audio/x-mpegurl")
 
@@ -361,7 +481,7 @@ async def _proxy_url(url: str) -> StreamingResponse:
 
 
 @app.get("/live/{stream_path:path}", name="live_stream")
-async def live_stream(request: Request, stream_path: str) -> StreamingResponse:
+async def live_stream(request: Request, stream_path: str) -> Response:
     try:
         username, remainder = stream_path.split("/", 1)
         password, filename = remainder.rsplit("/", 1)
@@ -371,13 +491,64 @@ async def live_stream(request: Request, stream_path: str) -> StreamingResponse:
         raise HTTPException(400, "Invalid live stream path") from exc
     if not await authenticator.verify(request, username, password):
         raise HTTPException(401, "Invalid username or password")
-    if extension != "ts":
+    if extension not in ("ts", "m3u8"):
         raise HTTPException(400, "Unsupported stream format")
     snapshot = await _get_catalog()
     stream = snapshot.streams_by_id.get(stream_id)
     if stream is None or stream not in _visible_streams(username, snapshot):
         raise HTTPException(404, "Stream not found")
+    if _upscale_enabled():
+        settings = cache.load_server_settings()
+        source = next(
+            (
+                source
+                for source in settings.get("sources", [])
+                if source.get("id") == stream.source_id
+            ),
+            {},
+        )
+        user_limits = auth.get_user_limits(username)
+        result = await ffmpeg_session.start_transcode(
+            _resolve_upstream(stream, "ts"),
+            content_type="live",
+            deinterlace_fallback=bool(source.get("deinterlace_fallback", True)),
+            username=username,
+            source_id=stream.source_id,
+            user_max_streams=user_limits.get("max_streams_per_source", {}).get(
+                stream.source_id, 0
+            ),
+            source_max_streams=int(source.get("max_streams", 0) or 0),
+        )
+        return RedirectResponse(
+            f"/upscale/{result['session_id']}/stream.m3u8",
+            status_code=302,
+        )
     return await _proxy_url(_resolve_upstream(stream, extension))
+
+
+@app.get("/upscale/{session_id}/{filename}")
+async def upscale_file(session_id: str, filename: str) -> Response:
+    safe_filename = Path(filename).name
+    if safe_filename != filename or ".." in filename:
+        raise HTTPException(400, "Invalid filename")
+    if not ffmpeg_session.touch_session(session_id):
+        raise HTTPException(404, "Upscale session not found")
+    session = ffmpeg_session.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Upscale session not found")
+    file_path = Path(session["dir"]) / safe_filename
+    if not file_path.exists():
+        raise HTTPException(404, "File not found")
+    headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+    if safe_filename.endswith(".m3u8"):
+        return Response(
+            file_path.read_text(),
+            media_type="application/vnd.apple.mpegurl",
+            headers=headers,
+        )
+    if safe_filename.endswith(".ts"):
+        return FileResponse(file_path, media_type="video/mp2t", headers=headers)
+    raise HTTPException(400, "Unsupported upscale file")
 
 
 @app.get("/xmltv.php")

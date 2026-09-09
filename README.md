@@ -203,9 +203,9 @@ Username: <your neTV username>
 Password: <your neTV password>
 ```
 
-The gateway currently supports live categories, live streams, MPEG-TS M3U
-playlists, short EPG lookups, user-filtered XMLTV, and live passthrough
-playback. VOD, series, and standalone upscaling will be added in later phases.
+The gateway currently supports live categories, live streams, MPEG-TS or HLS
+M3U playlists, short EPG lookups, user-filtered XMLTV, and live playback. VOD
+and series will be added in later phases.
 Remote provider credentials and playback URLs are not returned to the player.
 
 The gateway currently does not enforce the per-user `max_streams_per_source`
@@ -233,6 +233,44 @@ address or a comma-separated list of proxy IP addresses.
 
 For restricted users, the gateway hides uncategorized streams because they
 cannot be proven to belong to an allowed category.
+
+#### Native player 4K upscaling
+
+Port `8100` follows the same AI Upscale, maximum resolution, hardware, and
+quality settings configured in the web UI. When an AI model is selected, native
+player streams use HLS and run through the TensorRT super-resolution pipeline.
+When AI Upscale is disabled, the same endpoint returns MPEG-TS passthrough.
+
+The standard architecture-neutral gateway image supports passthrough only. To
+make port `8100` GPU-capable, replace it with the NVIDIA gateway service:
+
+```bash
+docker compose stop netv-gateway
+docker compose --profile upscale up -d --build netv-gateway-upscale
+```
+
+Continue using the same server, username, and password in Apple TV or another
+native IPTV player:
+
+```text
+Server:   http://<netv-host>:8100
+Username: <your neTV username>
+Password: <your neTV password>
+```
+
+Changes made under **Settings → Transcoding → AI Upscale** apply to new native
+player streams without changing the gateway address. Check the active setting
+and installed models at `http://<netv-host>:8100/capabilities`.
+The first container start builds GPU-specific TensorRT engines and can take a
+few minutes.
+
+For a source checkout running directly from `.venv`, the gateway uses the same
+default TensorRT engine directory as the web process:
+`~/ffmpeg_build/models`. Restart the gateway service after updating the code:
+
+```bash
+sudo systemctl restart netv-gateway.service
+```
 
 The `latest` image is published on tagged releases, on application changes
 merged to `main`, and when a maintainer triggers a rebuild manually. Scheduled
@@ -303,6 +341,12 @@ docker build -f Dockerfile.ai_upscale -t netv-ai-upscale .
 docker run --gpus all -v netv-models:/models -v ./cache:/app/cache -p 8000:8000 netv-ai-upscale
 ```
 
+The optional `2x-nomosuni-compact` model is based on
+[`Phips/2xNomosUni_compact_otf_medium`](https://huggingface.co/Phips/2xNomosUni_compact_otf_medium)
+by Philip Hofmann and is used under the CC BY 4.0 license. On an RTX 5090, the
+fixed 1080p FP16 engine processed a 30-second 1080p50 test clip at 77.84 FPS
+with a 1.81-second first-segment time.
+
 First start builds TensorRT engines for your GPU (~2-3 min). Engines are cached in the
 `netv-models` volume for instant subsequent starts.
 
@@ -353,6 +397,18 @@ uv sync --group ai_upscale
 # 5. Install systemd service
 sudo ./tools/install-netv.sh # default port=8000 or --port 9000
 ```
+
+The recommended installer set builds `4x-compact` for 480p/720p sources and
+`2x-nomosuni-compact` for 1080p sources. To build only NomosUni:
+
+```bash
+MODEL=2x-nomosuni-compact ./tools/install-ai_upscale.sh
+```
+
+After the engine is built, open **Settings → Transcoding**, select
+`2x-nomosuni-compact` under **AI Upscale**, choose a 4K maximum resolution, and
+set transcoding to **Always**. New web and port `8100` streams use the model
+without restarting the services.
 
 Manage with:
 

@@ -132,21 +132,23 @@ def get_sr_models() -> list[str]:
     if not SR_ENGINE_DIR.exists():
         return []
     # Engine files are named: {model}_{height}p_fp16.engine
-    # e.g., 4x-compact_1080p_fp16.engine, 2x-liveaction-span_720p_fp16.engine
+    # e.g., 4x-compact_720p_fp16.engine, 2x-nomosuni-compact_1080p_fp16.engine
     models = set()
     for engine in SR_ENGINE_DIR.glob("*_*p_fp16.engine"):
         # Extract model name by removing _{height}p_fp16.engine suffix
-        name = engine.stem  # e.g., "2x-liveaction-span_1080p_fp16"
+        name = engine.stem  # e.g., "2x-nomosuni-compact_1080p_fp16"
         # Remove _fp16 and _{height}p
-        parts = name.rsplit("_", 2)  # ["2x-liveaction-span", "1080p", "fp16"]
+        parts = name.rsplit("_", 2)  # ["2x-nomosuni-compact", "1080p", "fp16"]
         if len(parts) >= 3:
             models.add(parts[0])
 
-    # Sort with 4x-compact first (recommended), then alphabetically
+    # Put the recommended 1080p and 720p models first.
     def sort_key(m: str) -> tuple[int, str]:
-        if m == "4x-compact":
+        if m == "2x-nomosuni-compact":
             return (0, m)
-        return (1, m)
+        if m == "4x-compact":
+            return (1, m)
+        return (2, m)
 
     return sorted(models, key=sort_key)
 

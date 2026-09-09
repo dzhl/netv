@@ -43,13 +43,16 @@ def _get_gpu_vendor() -> str | None:
     # Fallback: check sysfs (works in containers)
     drm_path = pathlib.Path("/sys/class/drm")
     if drm_path.exists():
-        for card in drm_path.iterdir():
-            if card.name.startswith("card") and card.name[4:].isdigit():
-                vendor_file = card / "device" / "vendor"
-                if vendor_file.exists():
-                    vendor = vendor_file.read_text().strip().replace("0x", "")
-                    if vendor in ("8086", "1002"):
-                        return vendor
+        try:
+            for card in drm_path.iterdir():
+                if card.name.startswith("card") and card.name[4:].isdigit():
+                    vendor_file = card / "device" / "vendor"
+                    if vendor_file.exists():
+                        vendor = vendor_file.read_text().strip().replace("0x", "")
+                        if vendor in ("8086", "1002"):
+                            return vendor
+        except OSError:
+            pass
     return None
 
 

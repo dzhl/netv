@@ -107,6 +107,23 @@ class TestSafeRedirectHandler:
             )
 
 
+def test_redact_url_credentials():
+    assert (
+        util.redact_url_credentials(
+            "https://provider.example/live/remote-user/remote-pass/42.m3u8"
+        )
+        == "https://provider.example/live/***/***/42.m3u8"
+    )
+    assert (
+        util.redact_url_credentials(
+            "https://remote-user:remote-pass@provider.example/stream"
+            "?username=remote-user&password=remote-pass&channel=42"
+        )
+        == "https://***:***@provider.example/stream"
+        "?username=%2A%2A%2A&password=%2A%2A%2A&channel=42"
+    )
+
+
 if __name__ == "__main__":
     from testing import run_tests
 

@@ -35,6 +35,7 @@ from ffmpeg_command import (
     resolve_hls_master_playlist,
     restore_probe_cache_entry,
 )
+from util import redact_url_credentials
 
 
 log = logging.getLogger(__name__)
@@ -887,7 +888,7 @@ async def _do_start_transcode(
         "Starting transcode session %s (vod=%s): %s",
         session_id,
         is_vod,
-        " ".join(cmd),
+        " ".join(redact_url_credentials(arg) for arg in cmd),
     )
 
     process = await asyncio.create_subprocess_exec(

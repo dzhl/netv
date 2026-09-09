@@ -67,6 +67,8 @@ RUN if python3 -m pip install --help 2>&1 | grep -q -- '--break-system-packages'
     python3 -m pip install $PIP_OPTS \
         'torch>=2.1.0' \
         'onnx>=1.14.0' \
+        'onnxconverter-common>=1.14' \
+        'safetensors>=0.4' \
         'tensorrt>=9.0' \
         . && \
     # Verify packages installed correctly
@@ -80,10 +82,11 @@ RUN if python3 -m pip install --help 2>&1 | grep -q -- '--break-system-packages'
     echo "Cleanup complete"
 
 # Runtime config
-EXPOSE 8000
+EXPOSE 8000 8100
 
 # Environment variables (see README for details)
 ENV NETV_PORT=8000
+ENV NETV_GATEWAY_PORT=8100
 ENV NETV_HTTPS=""
 ENV LOG_LEVEL=INFO
 ENV SR_ENGINE_DIR=/models
@@ -105,8 +108,8 @@ RUN mkdir -p /models && \
 VOLUME /models
 
 # Healthcheck with improved error handling
-# Note: start-period=60s allows time for TensorRT engine compilation on first start
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python3 -c "import urllib.request; r=urllib.request.urlopen('http://localhost:8000/', timeout=5); exit(0 if r.status==200 else 1)" 2>/dev/null || exit 1
+# The long start period allows TensorRT engine compilation on first start.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5m --retries=3 \
+    CMD python3 -c "import os, urllib.request; gateway=os.environ.get('NETV_MODE') == 'gateway'; port=os.environ.get('NETV_GATEWAY_PORT', '8100') if gateway else os.environ.get('NETV_PORT', '8000'); path='/healthz' if gateway else '/'; r=urllib.request.urlopen(f'http://localhost:{port}{path}', timeout=5); exit(0 if r.status==200 else 1)" 2>/dev/null || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]

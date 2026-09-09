@@ -7,6 +7,7 @@ that can be loaded by FFmpeg's TensorRT DNN backend.
 Available models (use --list to see all):
   2x models (1080p → 4K):
     - 2x-liveaction-span    Best for live action TV/film
+    - 2x-nomosuni-compact   Fast universal upscaler for degraded sources
 
   4x models (720p → 4K, 480p → 1080p):
     - 4x-compact            Fast, good quality (SRVGGNetCompact)
@@ -22,7 +23,7 @@ Usage:
     python export-tensorrt.py --model 2x-liveaction-span --min-height 720 --max-height 1080
 
 Requirements:
-    pip install torch onnx tensorrt
+    pip install torch onnx onnxconverter-common safetensors tensorrt
 
 Example FFmpeg usage after export:
     ffmpeg -i input.mp4 -vf "dnn_processing=dnn_backend=tensorrt:model=model.engine" output.mp4
@@ -42,6 +43,10 @@ import sys
 import tempfile
 import urllib.request
 
+from onnxconverter_common import float16 as onnx_float16
+from safetensors.torch import load_file as load_safetensors
+
+import onnx
 import tensorrt as trt
 import torch
 import torch.nn as nn
@@ -210,6 +215,13 @@ MODELS: dict[str, ModelInfo] = {
         "scale": 2,
         "arch": "span",
     },
+    "2x-nomosuni-compact": {
+        "description": "Fast universal upscale - compression, noise, and blur handling",
+        "url": "https://huggingface.co/Phips/2xNomosUni_compact_otf_medium/resolve/3241c877a6e09036f9e466c840822bb066f11c44/2xNomosUni_compact_otf_medium.safetensors",
+        "filename": "2xNomosUni_compact_otf_medium.safetensors",
+        "scale": 2,
+        "arch": "compact",
+    },
     # 4x models - 720p → 4K or 480p → 1080p
     "4x-compact": {
         "description": "Fast 4x upscale - SRVGGNetCompact",
@@ -286,7 +298,7 @@ def list_models() -> None:
     print("  2x models (1080p → 4K):")
     for name, info in MODELS.items():
         if name.startswith("2x-"):
-            rec = " (recommended)" if name == "2x-liveaction-span" else ""
+            rec = " (recommended)" if name == "2x-nomosuni-compact" else ""
             print(f"    {name:24s} {info['description']}{rec}")
     print("\n  4x models (720p → 4K):")
     for name, info in MODELS.items():
@@ -324,9 +336,12 @@ def get_model_and_onnx(
         print(f"  Architecture: {arch}, Scale: {scale}x")
         return None, model_path, scale
 
-    # PTH-based models - load PyTorch
+    # PyTorch-based models - load state dict
     print(f"Loading PyTorch model from {model_path}")
-    state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+    if model_path.suffix == ".safetensors":
+        state_dict = load_safetensors(model_path, device="cpu")
+    else:
+        state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
     if "params_ema" in state_dict:
         state_dict = state_dict["params_ema"]
     elif "params" in state_dict:
@@ -366,24 +381,33 @@ def get_model_and_onnx(
     return model, None, scale
 
 
-def export_onnx(model: nn.Module, opt_shape: tuple[int, int], onnx_path: Path | str) -> None:
-    """Export model to ONNX format with dynamic axes."""
+def export_onnx(
+    model: nn.Module,
+    opt_shape: tuple[int, int],
+    onnx_path: Path | str,
+    *,
+    fixed_shape: bool = False,
+    precision: str = "fp32",
+) -> None:
+    """Export model to ONNX format."""
     opt_w, opt_h = opt_shape
     print(f"Exporting to ONNX: {onnx_path}")
     print(f"  Optimal shape: 1x3x{opt_h}x{opt_w}")
 
     dummy_input = torch.randn(1, 3, opt_h, opt_w, device="cpu")
 
-    dynamic_axes = {
-        "input": {
-            2: "height",
-            3: "width",
-        },
-        "output": {
-            2: "out_height",
-            3: "out_width",
-        },
-    }
+    dynamic_axes = None
+    if not fixed_shape:
+        dynamic_axes = {
+            "input": {
+                2: "height",
+                3: "width",
+            },
+            "output": {
+                2: "out_height",
+                3: "out_width",
+            },
+        }
 
     torch.onnx.export(
         model,
@@ -396,7 +420,16 @@ def export_onnx(model: nn.Module, opt_shape: tuple[int, int], onnx_path: Path | 
         dynamic_axes=dynamic_axes,
         dynamo=False,
     )
-    print("  ONNX export complete (dynamic H/W)")
+    if precision == "fp16":
+        converted = onnx_float16.convert_float_to_float16(
+            onnx.load(onnx_path),
+            keep_io_types=False,
+        )
+        onnx.save(converted, onnx_path)
+    elif precision == "bf16":
+        print("  BF16 ONNX conversion is unavailable; TensorRT will select BF16 kernels")
+    shape_mode = "fixed shape" if fixed_shape else "dynamic H/W"
+    print(f"  ONNX export complete ({shape_mode}, {precision})")
 
 
 def _get_trt_dtype_map() -> dict[str, trt.DataType]:
@@ -443,7 +476,11 @@ def build_engine(
 
     logger = trt.Logger(trt.Logger.INFO)
     builder = trt.Builder(logger)
-    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+    # Explicit batch is mandatory in TensorRT 10+; TensorRT 11 removed the
+    # legacy flag after deprecating it in TensorRT 10.
+    explicit_batch = getattr(trt.NetworkDefinitionCreationFlag, "EXPLICIT_BATCH", None)
+    network_flags = 0 if explicit_batch is None else 1 << int(explicit_batch)
+    network = builder.create_network(network_flags)
     parser = trt.OnnxParser(network, logger)
 
     with open(onnx_path, "rb") as f:
@@ -472,8 +509,11 @@ def build_engine(
 
     # Set compute precision
     if precision in ("fp16", "bf16"):
-        if builder.platform_has_fast_fp16:
-            config.set_flag(trt.BuilderFlag.FP16)
+        fp16_flag = getattr(trt.BuilderFlag, "FP16", None)
+        if fp16_flag is None:
+            pass  # TensorRT 11 uses strongly typed tensor dtypes instead.
+        elif getattr(builder, "platform_has_fast_fp16", True):
+            config.set_flag(fp16_flag)
         else:
             print("  Warning: FP16/BF16 not supported on this platform, using FP32")
             precision = "fp32"
@@ -491,10 +531,13 @@ def build_engine(
     io_dtype = dtype_map[precision]
 
     if io_dtype != trt.float32:
-        for i in range(network.num_inputs):
-            network.get_input(i).dtype = io_dtype
-        for i in range(network.num_outputs):
-            network.get_output(i).dtype = io_dtype
+        try:
+            for i in range(network.num_inputs):
+                network.get_input(i).dtype = io_dtype
+            for i in range(network.num_outputs):
+                network.get_output(i).dtype = io_dtype
+        except AttributeError:
+            print("  TensorRT 11 uses model-declared I/O types; preserving ONNX tensor dtypes")
 
     print("  Building engine (this may take several minutes)...")
     serialized_engine = builder.build_serialized_network(network, config)
@@ -645,6 +688,11 @@ def main() -> None:
 
     if args.output is None:
         args.output = f"{model_name}_{opt_h}p_{args.precision}.engine"
+    output_path = Path(args.output)
+    if output_path.exists() and output_path.is_dir():
+        raise ValueError(
+            f"--output must include an engine filename, not a directory: {output_path}"
+        )
 
     print("=" * 60)
     print("AI Upscale: TensorRT Engine Export")
@@ -673,7 +721,13 @@ def main() -> None:
     try:
         # Export to ONNX if needed (PTH-based models only)
         if model is not None:
-            export_onnx(model, opt_shape, onnx_path)
+            export_onnx(
+                model,
+                opt_shape,
+                onnx_path,
+                fixed_shape=min_shape == opt_shape == max_shape,
+                precision=args.precision,
+            )
 
         if args.onnx_only:
             print(f"\nONNX saved to: {onnx_path}")
@@ -683,7 +737,7 @@ def main() -> None:
 
         build_engine(
             onnx_path,
-            args.output,
+            output_path,
             min_shape=min_shape,
             opt_shape=opt_shape,
             max_shape=max_shape,
@@ -705,7 +759,7 @@ def main() -> None:
     print()
     print("Usage with FFmpeg:")
     print(
-        f'  ffmpeg -i input.mp4 -vf "dnn_processing=dnn_backend=tensorrt:model={args.output}" output.mp4'
+        f'  ffmpeg -i input.mp4 -vf "dnn_processing=dnn_backend=tensorrt:model={output_path}" output.mp4'
     )
 
 

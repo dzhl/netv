@@ -2,7 +2,7 @@
 # Build TensorRT engines for AI Upscale
 #
 # Prerequisites: uv sync --group ai_upscale
-#   Or: pip install torch onnx tensorrt
+#   Or: pip install torch onnx onnxconverter-common tensorrt safetensors
 #
 # Models sourced from https://openmodeldb.info/
 #
@@ -54,7 +54,7 @@ if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     echo ""
     echo "Arguments:"
     echo "  MODEL    Model to build (default: $MODEL)"
-    echo "           'recommended' - 4x-compact, 2x-liveaction-span"
+    echo "           'recommended' - 4x-compact, 2x-nomosuni-compact"
     echo "           'all'         - all models including 4x-realesrgan"
     echo ""
     echo "Environment:"
@@ -78,7 +78,7 @@ if [ "$MODEL" = "recommended" ]; then
     echo "AI Upscale: Building recommended models"
     echo "========================================"
     echo ""
-    for m in 4x-compact 2x-liveaction-span; do
+    for m in 4x-compact 2x-nomosuni-compact; do
         echo ">>> Building $m..."
         # Increment recursion depth when calling ourselves
         RECURSION_DEPTH=$((RECURSION_DEPTH + 1)) MODEL="$m" "$0"
@@ -94,7 +94,7 @@ if [ "$MODEL" = "all" ]; then
     echo "AI Upscale: Building ALL models"
     echo "========================================"
     echo ""
-    for m in 4x-compact 2x-liveaction-span 4x-realesrgan; do
+    for m in 4x-compact 2x-liveaction-span 2x-nomosuni-compact 4x-realesrgan; do
         echo ">>> Building $m..."
         # Increment recursion depth when calling ourselves
         RECURSION_DEPTH=$((RECURSION_DEPTH + 1)) MODEL="$m" "$0"
@@ -112,11 +112,11 @@ echo "Output: $MODEL_DIR/"
 echo ""
 
 # Check dependencies
-if ! run_python -c "import torch, onnx, tensorrt" 2>/dev/null; then
+if ! run_python -c "import onnxconverter_common, torch, onnx, safetensors, tensorrt" 2>/dev/null; then
     echo "ERROR: Missing dependencies. Install with:"
     echo "  uv sync --group ai_upscale"
     echo "Or:"
-    echo "  pip install torch onnx tensorrt"
+    echo "  pip install torch onnx onnxconverter-common tensorrt safetensors"
     exit 1
 fi
 
@@ -196,6 +196,7 @@ find "$MODEL_DIR" -maxdepth 1 -name "${SAFE_MODEL}_*.engine" -type f -exec ls -l
 echo ""
 echo "To use a different model, run:"
 echo "  MODEL=2x-liveaction-span $0"
+echo "  MODEL=2x-nomosuni-compact $0"
 echo "  MODEL=4x-compact $0"
 echo ""
 echo "Test with:"

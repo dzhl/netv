@@ -34,6 +34,46 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 _DEFAULT_USER_AGENT = "VLC/3.0.20 LibVLC/3.0.20"
 
 
+def redact_url_credentials(value: str) -> str:
+    """Redact credentials from a URL before logging it."""
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return value
+    if parsed.scheme not in ("http", "https"):
+        return value
+
+    hostname = parsed.hostname or ""
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    netloc = hostname
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    if parsed.username is not None:
+        netloc = f"***:***@{netloc}"
+
+    path_parts = parsed.path.split("/")
+    if len(path_parts) >= 5 and path_parts[1] in ("live", "movie", "series"):
+        path_parts[2:4] = ["***", "***"]
+
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    redacted_query = urllib.parse.urlencode(
+        [
+            (key, "***" if key.lower() in ("username", "password", "token") else value)
+            for key, value in query
+        ]
+    )
+    return urllib.parse.urlunsplit(
+        (
+            parsed.scheme,
+            netloc,
+            "/".join(path_parts),
+            redacted_query,
+            parsed.fragment,
+        )
+    )
+
+
 def atomic_write_json(path: pathlib.Path, value: Any) -> None:
     """Atomically replace a JSON file while preserving existing permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
