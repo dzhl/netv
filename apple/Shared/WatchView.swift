@@ -9,6 +9,11 @@ struct WatchView: View {
     var body: some View {
         #if os(macOS)
         macLayout
+        #elseif os(iOS)
+        standardLayout
+            .fullScreenCover(isPresented: $model.isPlayerExpanded) {
+                iOSFullScreenPlayer
+            }
         #else
         standardLayout
         #endif
@@ -64,8 +69,17 @@ struct WatchView: View {
         GeometryReader { proxy in
             VStack(spacing: 0) {
                 ZStack(alignment: .topTrailing) {
+                    #if os(iOS)
+                    if model.isPlayerExpanded {
+                        Color.black
+                    } else {
+                        playerSurface
+                        expandButton
+                    }
+                    #else
                     playerSurface
                     expandButton
+                    #endif
                 }
                 .frame(
                     width: proxy.size.width,
@@ -86,6 +100,35 @@ struct WatchView: View {
         }
         .navigationTitle(model.isPlayerExpanded ? "" : "Live TV")
     }
+
+    #if os(iOS)
+    private var iOSFullScreenPlayer: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black
+            if let selection = model.selection {
+                PlayerView(selection: selection)
+                    .id(selection.id)
+            }
+            Button {
+                model.isPlayerExpanded = false
+            } label: {
+                Image(systemName: "arrow.down.right.and.arrow.up.left")
+                    .font(.headline)
+                    .padding(11)
+                    .background(.black.opacity(0.62), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
+            .padding(16)
+            .accessibilityLabel("Exit full screen")
+        }
+        .background(Color.black)
+        .ignoresSafeArea()
+        .statusBarHidden(true)
+        .persistentSystemOverlays(.hidden)
+        .interactiveDismissDisabled()
+    }
+    #endif
 
     @ViewBuilder
     private var expandButton: some View {

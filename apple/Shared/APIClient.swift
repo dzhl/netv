@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 enum APIError: LocalizedError {
     case invalidServer
@@ -29,6 +30,10 @@ struct PlaybackConfiguration {
 final class APIClient {
     private let session: URLSession
     private let decoder = JSONDecoder()
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.netv",
+        category: "API"
+    )
 
     init() {
         let configuration = URLSessionConfiguration.default
@@ -54,7 +59,7 @@ final class APIClient {
         components.queryItems = fields
         request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
 
-        let (_, response) = try await session.data(for: request)
+        let (_, response) = try await data(for: request, operation: "login")
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
@@ -64,13 +69,17 @@ final class APIClient {
         return baseURL
     }
 
-    func validateSession(server: String) async -> Bool {
+    func validateSession(server: String) async throws -> Bool {
         guard let baseURL = normalizedServerURL(server),
-              let url = URL(string: "api/user-prefs", relativeTo: baseURL) else { return false }
+              let url = URL(string: "api/user-prefs", relativeTo: baseURL) else {
+            throw APIError.invalidServer
+        }
         var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        guard let (_, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse else { return false }
+        let (_, response) = try await data(for: request, operation: "session validation")
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
         return http.statusCode == 200
     }
 
@@ -100,7 +109,7 @@ final class APIClient {
 
         var request = URLRequest(url: playerPageURL)
         request.setValue("text/html", forHTTPHeaderField: "Accept")
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await data(for: request, operation: "playback configuration")
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
@@ -139,7 +148,9 @@ final class APIClient {
     func logout(server: String) async {
         guard let baseURL = normalizedServerURL(server),
               let url = URL(string: "logout", relativeTo: baseURL) else { return }
-        _ = try? await session.data(from: url)
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        _ = try? await data(for: request, operation: "logout")
         HTTPCookieStorage.shared.cookies(for: baseURL)?.forEach {
             HTTPCookieStorage.shared.deleteCookie($0)
         }
@@ -150,7 +161,7 @@ final class APIClient {
               let url = URL(string: "transcode/\(sessionID)", relativeTo: baseURL) else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
-        _ = try? await session.data(for: request)
+        _ = try? await data(for: request, operation: "stop transcode")
     }
 
     private func get<T: Decodable>(_ path: String, baseURL: URL) async throws -> T {
@@ -163,7 +174,7 @@ final class APIClient {
     private func get<T: Decodable>(url: URL) async throws -> T {
         var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await data(for: request, operation: "GET")
         guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
@@ -201,6 +212,45 @@ final class APIClient {
             cookieHeader: cookieHeader(for: playlistURL),
             transcodeSessionID: response.sessionID
         )
+    }
+
+    private func data(
+        for request: URLRequest,
+        operation: String
+    ) async throws -> (Data, URLResponse) {
+        let endpoint = request.url.map(loggableEndpoint) ?? "<invalid URL>"
+        let startedAt = Date()
+        logger.info("\(operation, privacy: .public) started: \(endpoint, privacy: .public)")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            let elapsed = Date().timeIntervalSince(startedAt)
+            if let http = response as? HTTPURLResponse {
+                logger.info(
+                    "\(operation, privacy: .public) finished: status=\(http.statusCode) bytes=\(data.count) duration=\(elapsed, format: .fixed(precision: 2))s endpoint=\(endpoint, privacy: .public)"
+                )
+            } else {
+                logger.error(
+                    "\(operation, privacy: .public) returned a non-HTTP response after \(elapsed, format: .fixed(precision: 2))s: \(endpoint, privacy: .public)"
+                )
+            }
+            return (data, response)
+        } catch {
+            let elapsed = Date().timeIntervalSince(startedAt)
+            logger.error(
+                "\(operation, privacy: .public) failed after \(elapsed, format: .fixed(precision: 2))s: \(endpoint, privacy: .public), \(error.localizedDescription, privacy: .public)"
+            )
+            throw error
+        }
+    }
+
+    private func loggableEndpoint(_ url: URL) -> String {
+        var components = URLComponents()
+        components.scheme = url.scheme
+        components.host = url.host
+        components.port = url.port
+        components.path = url.path
+        return components.string ?? "\(url.scheme ?? "unknown")://\(url.host ?? "unknown")\(url.path)"
     }
 
     private func playerConfigString(_ key: String, in html: String) -> String? {

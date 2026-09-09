@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -16,6 +17,10 @@ final class AppModel: ObservableObject {
     }
 
     private let client = APIClient()
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.netv",
+        category: "App"
+    )
 
     init() {
         server = UserDefaults.standard.string(forKey: "server") ?? "http://localhost:8000"
@@ -31,15 +36,18 @@ final class AppModel: ObservableObject {
     }
 
     func signIn(username: String, password: String) async {
+        logger.info("Sign-in started")
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
         do {
             _ = try await client.login(server: server, username: username, password: password)
             isAuthenticated = true
+            logger.info("Sign-in succeeded")
             await loadGuide()
         } catch {
-            errorMessage = error.localizedDescription
+            logger.error("Sign-in failed: \(error.localizedDescription, privacy: .public)")
+            errorMessage = connectionErrorMessage(for: error)
         }
     }
 
@@ -82,10 +90,40 @@ final class AppModel: ObservableObject {
     }
 
     private func restoreSession() async {
-        isAuthenticated = await client.validateSession(server: server)
-        isCheckingSession = false
-        if isAuthenticated {
-            await loadGuide()
+        logger.info("Saved-session check started")
+        defer { isCheckingSession = false }
+        do {
+            isAuthenticated = try await client.validateSession(server: server)
+            logger.info("Saved-session check finished: authenticated=\(self.isAuthenticated)")
+            isCheckingSession = false
+            if isAuthenticated {
+                await loadGuide()
+            }
+        } catch {
+            isAuthenticated = false
+            errorMessage = connectionErrorMessage(for: error)
+            logger.error("Saved-session check failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func connectionErrorMessage(for error: Error) -> String {
+        guard let urlError = error as? URLError else {
+            return error.localizedDescription
+        }
+        switch urlError.code {
+        case .timedOut:
+            return "The server timed out. Check that the address is reachable from this device."
+        case .cannotFindHost:
+            return "The server name could not be resolved. Check the server address and DNS."
+        case .cannotConnectToHost:
+            return "The server refused the connection. Check that neTV is running and the port is correct."
+        case .notConnectedToInternet:
+            return "This device is not connected to the network."
+        case .secureConnectionFailed, .serverCertificateUntrusted,
+             .serverCertificateHasBadDate, .serverCertificateHasUnknownRoot:
+            return "A secure connection could not be established. Check the server certificate."
+        default:
+            return urlError.localizedDescription
         }
     }
 }

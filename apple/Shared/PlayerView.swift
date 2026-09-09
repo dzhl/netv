@@ -1,4 +1,8 @@
 import AVKit
+#if os(iOS)
+import AVFAudio
+#endif
+import OSLog
 import SwiftUI
 
 struct PlayerView: View {
@@ -8,6 +12,10 @@ struct PlayerView: View {
     @State private var player: AVPlayer?
     @State private var errorMessage: String?
     @State private var transcodeSessionID: String?
+    private let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.netv",
+        category: "Player"
+    )
 
     var body: some View {
         ZStack {
@@ -51,9 +59,16 @@ struct PlayerView: View {
             .foregroundStyle(.white)
         }
         .task {
+            logger.info("Tuning channel \(selection.channel.id, privacy: .public)")
             do {
+                #if os(iOS)
+                try configureAudioSession()
+                #endif
                 let configuration = try await model.playerConfiguration(for: selection)
                 transcodeSessionID = configuration.transcodeSessionID
+                logger.info(
+                    "Playback configuration resolved: host=\(configuration.url.host ?? "unknown", privacy: .public) transcoding=\(configuration.transcodeSessionID != nil)"
+                )
                 var options: [String: Any] = [:]
                 if let cookie = configuration.cookieHeader {
                     options["AVURLAssetHTTPHeaderFieldsKey"] = ["Cookie": cookie]
@@ -62,10 +77,19 @@ struct PlayerView: View {
                 guard try await asset.load(.isPlayable) else {
                     throw APIError.server("This channel's stream is not compatible with AVPlayer.")
                 }
+                if let audioTracks = try? await asset.loadTracks(withMediaType: .audio) {
+                    logger.info("Stream audio tracks discovered: \(audioTracks.count)")
+                }
                 let player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+                player.isMuted = false
+                player.volume = 1
                 self.player = player
                 player.play()
+                logger.info("Playback started for channel \(selection.channel.id, privacy: .public)")
             } catch {
+                logger.error(
+                    "Playback failed for channel \(selection.channel.id, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
                 errorMessage = error.localizedDescription
             }
         }
@@ -77,6 +101,20 @@ struct PlayerView: View {
             }
         }
     }
+
+    #if os(iOS)
+    private func configureAudioSession() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playback, mode: .moviePlayback)
+        try session.setActive(true)
+        let outputs = session.currentRoute.outputs
+            .map { $0.portType.rawValue }
+            .joined(separator: ", ")
+        logger.info(
+            "Audio session active: route=\(outputs.isEmpty ? "none" : outputs, privacy: .public) outputVolume=\(session.outputVolume)"
+        )
+    }
+    #endif
 }
 
 #if os(macOS)
