@@ -1,6 +1,11 @@
 # neTV
 
-A minimal, self-hosted web interface for IPTV streams.
+A fast, self-hosted IPTV experience for the web, Apple TV, iPhone, macOS,
+Chromecast, and Xtream-compatible players.
+
+> **Live TV, upgraded to 4K.** neTV can AI-upscale 1080p streams to 4K at
+> **70+ FPS** on an RTX 5090, with GPU decoding, TensorRT inference, and NVENC
+> encoding in one real-time playback pipeline.
 
 ![EPG Guide](screenshots/epg.png)
 
@@ -37,9 +42,10 @@ through their IPTV providers.
 
 - **Live TV** with EPG grid guide
 - **Experimental Apple apps** for iPhone, Apple TV, and macOS
-- **Native player gateway** - Use the configured live channels from Xtream-compatible players
+- **Native player gateway** - Bring your neTV channels and settings to Apple TV and other Xtream-compatible players
 - **Movies & Series** with metadata, seasons, episodes
-- **AI Upscale** - Real-time 4x upscaling via TensorRT (720p → 4K @ 85fps)
+- **Real-time 4K AI Upscale** - 1080p → 4K at 70+ FPS through TensorRT on an RTX 5090
+- **GPU-accelerated transcoding** - NVDEC, TensorRT, and NVENC with low-latency HLS
 - **Chromecast** support (HTTPS required)
 - **Closed captions** with style customization
 - **Search** across all content (supports regex)
@@ -79,8 +85,15 @@ Extensively optimized for minimal latency and CPU usage:
 
 ### 4K AI Upscaling
 
-Real-time 4x upscaling using Real-ESRGAN via TensorRT. Transforms 480p/720p/1080p
-content to pristine 4K at 85fps (RTX 5090). Perfect for older shows and low-bitrate streams.
+neTV uses NVIDIA TensorRT super-resolution to transform SD and HD channels into
+sharp 4K video as they play. The optimized 1080p → 4K pipeline exceeds
+**70 FPS on an RTX 5090**, enough for smooth 50/60 FPS live television with
+headroom to spare. It also handles compression artifacts, noise, and blur,
+making it especially effective for older shows and lower-bitrate streams.
+
+The same pipeline works in the browser and through the native player gateway on
+port `8100`, so Apple TV and other Xtream-compatible clients get the same
+server-controlled 4K experience.
 
 | Before (720p source) | After (4K AI Upscale) |
 |---|---|
@@ -88,7 +101,7 @@ content to pristine 4K at 85fps (RTX 5090). Perfect for older shows and low-bitr
 | ![Before](screenshots/ai-upscale_cleopatra_disabled.png) | ![After](screenshots/ai-upscale_cleopatra_enabled.png) |
 | ![Before](screenshots/ai-upscale_batman_disabled.png) | ![After](screenshots/ai-upscale_batman_enabled.png) |
 
-Requires Nvidia GPU and the [AI Upscale Docker image](#ai-upscale-image-nvidia-gpu).
+Requires an NVIDIA GPU and the [AI Upscale image](#ai-upscale-image-nvidia-gpu).
 The Settings page shows AI Upscale options when TensorRT engines are available.
 
 ## Alternatives
@@ -330,9 +343,9 @@ FFMPEG_IMAGE=ghcr.io/jvdillon/netv-ffmpeg:<cuda-version> docker compose --profil
 
 For AMD or Intel, it does not matter which version you choose nor do you need Cuda installed.
 
-#### Optional: AI Upscaling (Nvidia GPU only)
+#### AI Upscale Image (Nvidia GPU)
 
-For real-time 2x or 4x AI upscaling (4x: 720p → 4K at ~39fps or 480p → 4K at ~85fps on RTX 5090):
+For real-time AI upscaling, including **1080p → 4K at 70+ FPS** on an RTX 5090:
 
 ```bash
 git clone https://github.com/jvdillon/netv.git
@@ -341,14 +354,17 @@ docker build -f Dockerfile.ai_upscale -t netv-ai-upscale .
 docker run --gpus all -v netv-models:/models -v ./cache:/app/cache -p 8000:8000 netv-ai-upscale
 ```
 
-The optional `2x-nomosuni-compact` model is based on
-[`Phips/2xNomosUni_compact_otf_medium`](https://huggingface.co/Phips/2xNomosUni_compact_otf_medium)
-by Philip Hofmann and is used under the CC BY 4.0 license. On an RTX 5090, the
-fixed 1080p FP16 engine processed a 30-second 1080p50 test clip at 77.84 FPS
-with a 1.81-second first-segment time.
-
 First start builds TensorRT engines for your GPU (~2-3 min). Engines are cached in the
 `netv-models` volume for instant subsequent starts.
+
+<details>
+<summary>AI model attribution</summary>
+
+The recommended 1080p upscaler is based on
+[`Phips/2xNomosUni_compact_otf_medium`](https://huggingface.co/Phips/2xNomosUni_compact_otf_medium)
+by Philip Hofmann and is used under the CC BY 4.0 license.
+
+</details>
 
 Requirements:
 - Nvidia GPU (RTX 20xx or newer recommended)
@@ -398,17 +414,13 @@ uv sync --group ai_upscale
 sudo ./tools/install-netv.sh # default port=8000 or --port 9000
 ```
 
-The recommended installer set builds `4x-compact` for 480p/720p sources and
-`2x-nomosuni-compact` for 1080p sources. To build only NomosUni:
-
-```bash
-MODEL=2x-nomosuni-compact ./tools/install-ai_upscale.sh
-```
+The default installer builds the recommended engines for both SD/720p and
+1080p sources.
 
 After the engine is built, open **Settings → Transcoding**, select
-`2x-nomosuni-compact` under **AI Upscale**, choose a 4K maximum resolution, and
-set transcoding to **Always**. New web and port `8100` streams use the model
-without restarting the services.
+the recommended 1080p option under **AI Upscale**, choose a 4K maximum
+resolution, and set transcoding to **Always**. New web and port `8100` streams
+use the setting without restarting the services.
 
 Manage with:
 
