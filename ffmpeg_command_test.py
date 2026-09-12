@@ -1179,3 +1179,21 @@ if __name__ == "__main__":
     from testing import run_tests
 
     run_tests(__file__)
+
+
+@pytest.mark.parametrize("hw", ["software", "nvenc+software", "amf+software", "qsv", "vaapi"])
+def test_bandwidth_saver_bypasses_ai_and_scales_down(hw):
+    with (
+        patch("ffmpeg_command._load_settings", return_value={"sr_model": "nomos"}),
+        patch("ffmpeg_command._sr_engine_dir", "/models"),
+        patch("ffmpeg_command._build_sr_filter") as sr_filter,
+    ):
+        cmd = build_hls_ffmpeg_cmd(
+            "http://example.com/live.ts", hw, "/tmp/hls",
+            media_info=FakeMediaInfo(height=2160), max_resolution="720p",
+            quality="low", allow_upscale=False,
+        )
+    sr_filter.assert_not_called()
+    assert "720" in " ".join(cmd)
+    assert "dnn_processing" not in " ".join(cmd)
+    assert cmd[cmd.index("-c:v") + 1] != "copy"

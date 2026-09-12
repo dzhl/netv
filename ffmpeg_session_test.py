@@ -833,3 +833,41 @@ if __name__ == "__main__":
     from testing import run_tests
 
     run_tests(__file__)
+
+
+class TestPlaybackFeedback:
+    def setup_method(self):
+        _clear_session_state()
+
+    def teardown_method(self):
+        _clear_session_state()
+
+    def test_feedback_decision_and_heartbeat(self):
+        from ffmpeg_session import report_playback_health
+        from playback_policy import PlaybackHealth, PlaybackPolicy
+
+        _transcode_sessions["live"] = {
+            "username": "viewer", "playback_policy": PlaybackPolicy(), "last_access": 0,
+        }
+        health = PlaybackHealth(buffer_seconds=0, waiting=True)
+        with patch("ffmpeg_session.time.monotonic") as clock:
+            for now in range(0, 26, 2):
+                clock.return_value = now
+                result = report_playback_health("live", "viewer", health)
+        assert result == {"bandwidth_saver": True}
+        assert _transcode_sessions["live"]["last_access"] > 0
+
+    def test_feedback_requires_owner_and_live_session(self):
+        from fastapi import HTTPException
+
+        import pytest
+
+        from ffmpeg_session import report_playback_health
+        from playback_policy import PlaybackHealth
+
+        health = PlaybackHealth(buffer_seconds=0, waiting=True)
+        _transcode_sessions["vod"] = {"username": "viewer", "is_vod": True}
+        for session_id, username, status in [("missing", "viewer", 404), ("vod", "other", 404), ("vod", "viewer", 400)]:
+            with pytest.raises(HTTPException) as error:
+                report_playback_health(session_id, username, health)
+            assert error.value.status_code == status

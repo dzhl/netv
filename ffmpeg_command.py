@@ -899,6 +899,7 @@ def _build_video_args(
     quality: str,
     is_hdr: bool = False,
     source_height: int = 0,
+    allow_upscale: bool = True,
 ) -> tuple[list[str], list[str]]:
     """Build video args. Returns (pre_input_args, post_input_args)."""
     if copy_video:
@@ -912,7 +913,7 @@ def _build_video_args(
     # Check if SR should be applied (discrete GPUs only)
     sr_filter = ""
     sr_model = _load_settings().get("sr_model", "")
-    if sr_model and enc_type in ("nvenc", "amf") and _sr_engine_dir:
+    if allow_upscale and sr_model and enc_type in ("nvenc", "amf") and _sr_engine_dir:
         sr_filter = _build_sr_filter(source_height, max_h or 0)
         # SR requires CPU frames, so disable hw pipeline when SR active
         if sr_filter:
@@ -1183,6 +1184,7 @@ def build_hls_ffmpeg_cmd(
     quality: str = "high",
     user_agent: str | None = None,
     deinterlace_fallback: bool | None = None,
+    allow_upscale: bool = True,
 ) -> list[str]:
     """Build ffmpeg command for HLS transcoding."""
     # Check if we can copy streams directly (compatible codecs, no processing needed)
@@ -1190,7 +1192,7 @@ def build_hls_ffmpeg_cmd(
     needs_scale = media_info and media_info.height > max_h
 
     # SR requires re-encode (can't copy video when SR is active)
-    sr_active = bool(_sr_engine_dir and _load_settings().get("sr_model", ""))
+    sr_active = bool(allow_upscale and _sr_engine_dir and _load_settings().get("sr_model", ""))
 
     copy_video = bool(
         media_info
@@ -1241,6 +1243,7 @@ def build_hls_ffmpeg_cmd(
         quality=quality,
         is_hdr=media_info.is_hdr if media_info else False,
         source_height=media_info.height if media_info else 0,
+        allow_upscale=allow_upscale,
     )
     audio_args = _build_audio_args(
         copy_audio=copy_audio,

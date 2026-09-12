@@ -75,8 +75,12 @@ final class AppModel: ObservableObject {
         selection = PlayerSelection(channel: row.channel, program: row.currentProgram)
     }
 
-    func playerConfiguration(for selection: PlayerSelection) async throws -> PlaybackConfiguration {
-        try await client.playbackConfiguration(server: server, channelID: selection.channel.id)
+    func playerConfiguration(for selection: PlayerSelection, bandwidthSaver: Bool = false) async throws -> PlaybackConfiguration {
+        try await client.playbackConfiguration(server: server, channelID: selection.channel.id, bandwidthSaver: bandwidthSaver)
+    }
+
+    func reportPlaybackHealth(sessionID: String, health: PlaybackHealth) async throws -> Bool {
+        try await client.reportPlaybackHealth(server: server, sessionID: sessionID, health: health)
     }
 
     func stopPlayback(sessionID: String) async {

@@ -732,3 +732,32 @@ if __name__ == "__main__":
     from testing import run_tests
 
     run_tests(__file__)
+
+
+class TestPlaybackHealth:
+    def test_invalid_feedback_is_rejected(self, auth_client):
+        response = auth_client.post("/transcode/missing/health", json={"buffer_seconds": -1, "waiting": True})
+        assert response.status_code == 422
+
+    def test_feedback_is_passed_to_backend(self, auth_client):
+        with patch("ffmpeg_session.report_playback_health", return_value={"bandwidth_saver": True}) as report:
+            response = auth_client.post("/transcode/live/health", json={"buffer_seconds": 0, "waiting": True})
+        assert response.json() == {"bandwidth_saver": True}
+        assert report.call_args.args[:2] == ("live", "testuser")
+
+    def test_force_stop_releases_current_stream(self, auth_client):
+        with (
+            patch("ffmpeg_session.get_session", return_value={"username": "testuser"}),
+            patch("ffmpeg_session.stop_session") as stop,
+        ):
+            response = auth_client.delete("/transcode/live?force=true")
+        assert response.status_code == 200
+        stop.assert_called_once_with("live", force=True)
+
+    def test_force_stop_requires_owner(self, auth_client):
+        with (
+            patch("ffmpeg_session.get_session", return_value={"username": "other"}),
+            patch("ffmpeg_session.stop_session") as stop,
+        ):
+            assert auth_client.delete("/transcode/live?force=true").status_code == 404
+        stop.assert_not_called()

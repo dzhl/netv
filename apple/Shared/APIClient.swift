@@ -101,7 +101,7 @@ final class APIClient {
         return response.rows
     }
 
-    func playbackConfiguration(server: String, channelID: String) async throws -> PlaybackConfiguration {
+    func playbackConfiguration(server: String, channelID: String, bandwidthSaver: Bool = false) async throws -> PlaybackConfiguration {
         guard let baseURL = normalizedServerURL(server),
               let playerPageURL = URL(string: "play/live/\(channelID)", relativeTo: baseURL) else {
             throw APIError.invalidServer
@@ -129,7 +129,8 @@ final class APIClient {
                 baseURL: baseURL,
                 rawURL: rawURL,
                 sourceID: playerConfigString("sourceId", in: html) ?? "",
-                deinterlaceFallback: playerConfigBool("deinterlaceFallback", in: html) ?? true
+                deinterlaceFallback: playerConfigBool("deinterlaceFallback", in: html) ?? true,
+                bandwidthSaver: bandwidthSaver
             )
         }
 
@@ -158,10 +159,25 @@ final class APIClient {
 
     func stopTranscode(server: String, sessionID: String) async {
         guard let baseURL = normalizedServerURL(server),
-              let url = URL(string: "transcode/\(sessionID)", relativeTo: baseURL) else { return }
+              let url = URL(string: "transcode/\(sessionID)?force=true", relativeTo: baseURL) else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         _ = try? await data(for: request, operation: "stop transcode")
+    }
+
+    func reportPlaybackHealth(server: String, sessionID: String, health: PlaybackHealth) async throws -> Bool {
+        guard let baseURL = normalizedServerURL(server) else { throw APIError.invalidServer }
+        let url = baseURL.appendingPathComponent("transcode/\(sessionID)/health")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 5
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(health)
+        let (data, response) = try await data(for: request, operation: "playback health")
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw APIError.invalidResponse
+        }
+        return try decoder.decode(PlaybackHealthResponse.self, from: data).bandwidthSaver
     }
 
     private func get<T: Decodable>(_ path: String, baseURL: URL) async throws -> T {
@@ -190,7 +206,8 @@ final class APIClient {
         baseURL: URL,
         rawURL: URL,
         sourceID: String,
-        deinterlaceFallback: Bool
+        deinterlaceFallback: Bool,
+        bandwidthSaver: Bool
     ) async throws -> PlaybackConfiguration {
         var components = URLComponents(
             url: baseURL.appendingPathComponent("transcode/start"),
@@ -200,7 +217,8 @@ final class APIClient {
             URLQueryItem(name: "url", value: rawURL.absoluteString),
             URLQueryItem(name: "content_type", value: "live"),
             URLQueryItem(name: "deinterlace_fallback", value: deinterlaceFallback ? "1" : "0"),
-            URLQueryItem(name: "source_id", value: sourceID)
+            URLQueryItem(name: "source_id", value: sourceID),
+            URLQueryItem(name: "bandwidth_saver", value: bandwidthSaver ? "true" : "false")
         ]
         guard let url = components?.url else { throw APIError.invalidServer }
         let response: TranscodeResponse = try await get(url: url)
@@ -301,5 +319,27 @@ private struct TranscodeResponse: Decodable {
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case playlist
+    }
+}
+
+struct PlaybackHealth: Encodable {
+    let bufferSeconds: Double
+    let waiting: Bool
+    let observedBitrate: Double
+    let requiredBitrate: Double
+
+    enum CodingKeys: String, CodingKey {
+        case bufferSeconds = "buffer_seconds"
+        case waiting
+        case observedBitrate = "observed_bitrate"
+        case requiredBitrate = "required_bitrate"
+    }
+}
+
+private struct PlaybackHealthResponse: Decodable {
+    let bandwidthSaver: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case bandwidthSaver = "bandwidth_saver"
     }
 }

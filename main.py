@@ -89,6 +89,7 @@ from m3u import (
     load_vod_data,
     parse_epg_urls,
 )
+from playback_policy import PlaybackHealth
 from xtream import XtreamClient
 
 import auth
@@ -1800,6 +1801,7 @@ async def transcode_start(
     series_name: str = "",
     deinterlace_fallback: str = "1",  # "1" or "0"
     source_id: str = "",
+    bandwidth_saver: bool = False,
 ):
     """Start a transcode session, return session ID."""
     deinterlace_fb = deinterlace_fallback == "1"
@@ -1830,7 +1832,17 @@ async def transcode_start(
         source_id,
         user_max_streams,
         source_max_streams,
+        bandwidth_saver=bandwidth_saver,
     )
+
+
+@app.post("/transcode/{session_id}/health")
+async def transcode_health(
+    session_id: str,
+    health: PlaybackHealth,
+    user: Annotated[dict, Depends(require_auth)],
+):
+    return ffmpeg_session.report_playback_health(session_id, user.get("sub", ""), health)
 
 
 @app.get("/transcode/seek/{session_id}")
@@ -1930,9 +1942,14 @@ async def subtitle_file(session_id: str, filename: str):
 async def transcode_stop(
     session_id: str,
     _user: Annotated[dict, Depends(require_auth)],
+    force: bool = False,
 ):
     """Stop a transcode session (VOD sessions stay cached)."""
-    ffmpeg_session.stop_session(session_id, force=False)
+    if force:
+        session = ffmpeg_session.get_session(session_id)
+        if session and session.get("username") != _user.get("sub", ""):
+            raise HTTPException(404, "Session not found")
+    ffmpeg_session.stop_session(session_id, force=force)
     return {"status": "stopped"}
 
 

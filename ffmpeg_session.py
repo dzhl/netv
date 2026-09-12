@@ -35,6 +35,7 @@ from ffmpeg_command import (
     resolve_hls_master_playlist,
     restore_probe_cache_entry,
 )
+from playback_policy import PlaybackHealth, PlaybackPolicy
 from util import redact_url_credentials
 
 
@@ -183,7 +184,7 @@ def stop_session(session_id: str, force: bool = False) -> None:
 
         _transcode_sessions.pop(session_id, None)
         url = session.get("url")
-        if url:
+        if url and _url_to_session.get(url) == session_id:
             _url_to_session.pop(url, None)
         dir_to_remove = session["dir"]
 
@@ -815,6 +816,7 @@ async def _do_start_transcode(
     deinterlace_fallback: bool = True,
     username: str = "",
     source_id: str = "",
+    bandwidth_saver: bool = False,
 ) -> dict[str, Any]:
     """Core transcode logic. Raises HTTPException on failure."""
     # Resolve HLS master playlist to highest bandwidth variant
@@ -824,6 +826,9 @@ async def _do_start_transcode(
     hw = settings.get("transcode_hw", "software")
     max_resolution = settings.get("max_resolution", "1080p")
     quality = settings.get("quality", "high")
+    if bandwidth_saver:
+        max_resolution = "480p" if max_resolution == "480p" else "720p"
+        quality = "low"
     is_vod = content_type in ("movie", "series")
     probe_key = {"movie": "probe_movies", "series": "probe_series", "live": "probe_live"}
     do_probe = settings.get(probe_key.get(content_type, ""), False)
@@ -877,6 +882,7 @@ async def _do_start_transcode(
         quality,
         get_user_agent(),
         deinterlace_fallback,
+        allow_upscale=not bandwidth_saver,
     )
     if old_seek_offset > 0:
         i_idx = cmd.index("-i")
@@ -920,6 +926,8 @@ async def _do_start_transcode(
             "episode_id": episode_id,
             "username": username,
             "source_id": source_id,
+            "bandwidth_saver": bandwidth_saver,
+            "playback_policy": PlaybackPolicy(),
         }
         _url_to_session[url] = session_id
 
@@ -970,7 +978,7 @@ async def _do_start_transcode(
             process.returncode or -1,
             error_msg,
         )
-        stop_session(session_id)
+        stop_session(session_id, force=True)
         raise HTTPException(500, "Transcode failed - check server logs for details")
 
     return {
@@ -993,16 +1001,27 @@ async def start_transcode(
     source_id: str = "",
     user_max_streams: int = 0,
     source_max_streams: int = 0,
+    bandwidth_saver: bool = False,
 ) -> dict[str, Any]:
     """Start or reuse a transcode session."""
+    if bandwidth_saver and content_type != "live":
+        raise HTTPException(400, "Adaptive playback is only supported for live streams")
     # Enforce stream limits
     if username:
         error = enforce_stream_limits(username, source_id, user_max_streams, source_max_streams)
         if error:
             raise HTTPException(status_code=429, detail=error)
 
-    is_vod = content_type in ("movie", "series")
+    # A quality change replaces the current stream; release its slot first.
     existing_id, is_valid, old_seek_offset = _get_existing_session(url)
+    if bandwidth_saver and existing_id:
+        session = get_session(existing_id)
+        if session and session.get("username") != username:
+            raise HTTPException(404, "Session not found")
+        stop_session(existing_id, force=True)
+        existing_id, is_valid, old_seek_offset = None, False, 0.0
+
+    is_vod = content_type in ("movie", "series")
 
     # Try to reuse existing valid session
     if existing_id and is_valid:
@@ -1028,6 +1047,7 @@ async def start_transcode(
             deinterlace_fallback,
             username,
             source_id,
+            bandwidth_saver,
         )
     except HTTPException:
         if series_id is None:
@@ -1044,6 +1064,7 @@ async def start_transcode(
             deinterlace_fallback,
             username,
             source_id,
+            bandwidth_saver,
         )
 
 
@@ -1288,3 +1309,16 @@ async def seek_transcode(session_id: str, seek_time: float) -> dict[str, Any]:
         "segment": segment_num,
         "time": seek_time,
     }
+
+
+def report_playback_health(session_id: str, username: str, health: PlaybackHealth) -> dict[str, bool]:
+    """Evaluate playback pressure for the current live stream."""
+    with _transcode_lock:
+        session = _transcode_sessions.get(session_id)
+        if not session or session.get("username") != username:
+            raise HTTPException(404, "Session not found")
+        if session.get("is_vod"):
+            raise HTTPException(400, "Playback feedback is only supported for live streams")
+        session["last_access"] = time.time()
+        downgrade = session["playback_policy"].observe(health, time.monotonic())
+        return {"bandwidth_saver": bool(downgrade or session.get("bandwidth_saver"))}
