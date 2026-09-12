@@ -11,6 +11,7 @@ struct PlayerView: View {
 
     @State private var player: AVPlayer?
     @State private var errorMessage: String?
+    @State private var quality: String?
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.netv",
         category: "Player"
@@ -44,6 +45,13 @@ struct PlayerView: View {
                         }
                     }
                     Spacer()
+                    if let quality {
+                        Text(quality)
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.white.opacity(0.18), in: Capsule())
+                    }
                 }
                 .padding()
                 .background(
@@ -71,6 +79,7 @@ struct PlayerView: View {
         defer {
             player?.pause()
             player = nil
+            quality = nil
             if let sessionID = activeSessionID {
                 Task { await model.stopPlayback(sessionID: sessionID) }
             }
@@ -105,6 +114,7 @@ struct PlayerView: View {
                 var shouldRetune = false
                 while !Task.isCancelled {
                     try await Task.sleep(for: .seconds(2))
+                    quality = qualityLabel(for: item.presentationSize)
                     guard let sessionID = activeSessionID else { continue }
                     // Pauses aren't stalls. Reporting healthy samples also resets the
                     // server's consecutive-poor-playback window and keeps it alive.
@@ -127,6 +137,7 @@ struct PlayerView: View {
                     logger.info("Retuning without upscaling after sustained playback pressure")
                     currentPlayer.pause()
                     player = nil
+                    quality = nil
                     if let sessionID = activeSessionID {
                         await model.stopPlayback(sessionID: sessionID)
                         activeSessionID = nil
@@ -197,6 +208,21 @@ private struct PlayerController: UIViewControllerRepresentable {
     }
 }
 #endif
+
+/// Classify on the larger of the frame height and the height a 16:9 frame of this width
+/// would have: a letterboxed 1920x800 frame is a 1080p stream, not a 720p one.
+private func qualityLabel(for size: CGSize) -> String? {
+    guard size.width > 0, size.height > 0 else { return nil }
+    switch max(size.height, size.width * 9 / 16) {
+    case 2000...: return "4K"
+    case 1300...: return "1440p"
+    case 900...: return "1080p"
+    case 650...: return "720p"
+    case 520...: return "576p"
+    case 400...: return "480p"
+    default: return "SD"
+    }
+}
 
 /// Use recent transfer deltas; a cumulative bitrate can hide a Wi-Fi-to-cellular slowdown.
 private struct PlaybackHealthSampler {
