@@ -75,6 +75,27 @@ def test_commands_only_ingest_opens_provider(tmp_path):
         assert duration * int(cmd[cmd.index("-hls_list_size") + 1]) >= 30
 
 
+@pytest.mark.parametrize("hardware", ["nvenc", "software", "amf", "qsv"])
+@pytest.mark.parametrize(
+    "resolution,target,maximum",
+    [
+        ("1080p", "6000000", "8000000"),
+        ("1440p", "10000000", "14000000"),
+        ("4k", "16000000", "20000000"),
+    ],
+)
+def test_upgrade_uses_bounded_bitrate(tmp_path, hardware, resolution, target, maximum):
+    cmd = fast_start.encoder_command(str(tmp_path), hardware, resolution, "high", False, True)
+    assert cmd[cmd.index("-b:v") + 1] == target
+    assert cmd[cmd.index("-maxrate") + 1] == maximum
+    assert cmd[cmd.index("-bufsize") + 1] == maximum
+    assert not set(cmd) & {"-qp", "-qp_i", "-qp_p", "-global_quality", "-crf", "constqp", "cqp"}
+    if hardware == "nvenc":
+        assert cmd[cmd.index("-rc") + 1] == "vbr"
+    low = fast_start.encoder_command(str(tmp_path), hardware, "720p", "low", False, False)
+    assert "-maxrate" not in low
+
+
 def test_upgrade_requires_sustained_headroom_and_fallback_latches(tmp_path):
     playlist(tmp_path, "low")
     playlist(tmp_path, "high")

@@ -21,6 +21,14 @@ changing quality does not open another provider stream. This requires capacity
 for two local encoders and up to roughly two minutes of source segments on disk
 (source keyframe spacing can lengthen that window).
 
+The high rendition uses bounded video bitrate: 1080p targets 6 Mbps with an 8 Mbps
+peak setting, 1440p targets 10/14 Mbps, and 4K targets 16/20 Mbps. This replaces
+unbounded constant-QP encoding for fast-start upgrades, trading compression quality
+for predictable bandwidth. Audio and transport overhead are additional; the
+upgrade decision still uses measured segment sizes rather than assuming the
+encoder setting is an exact network cap. NVENC uses
+[variable bitrate control](https://docs.nvidia.com/video-technologies/video-codec-sdk/13.1/ffmpeg-with-nvidia-gpu/index.html).
+
 Startup waits for at least eight seconds of 720p media (or two source segment
 durations, whichever is longer) to bridge bursty upstream delivery. Each rendition
 keeps at least the normal 30-second live window. The app requests a 12-second

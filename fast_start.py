@@ -93,7 +93,37 @@ def encoder_command(
         f"expr:if(isnan(prev_forced_t),1,gte(t,prev_forced_t+{duration}))",
     ]
     cmd[-1] = f"{directory}/{prefix}.m3u8"
+    if high:
+        _limit_high_bitrate(cmd, resolution)
     return cmd
+
+
+def _limit_high_bitrate(cmd: list[str], resolution: str) -> None:
+    """Bound the upgraded rendition instead of letting SR noise inflate CQP output."""
+    target, maximum = {
+        "1080p": (6_000_000, 8_000_000),
+        "1440p": (10_000_000, 14_000_000),
+        "4k": (16_000_000, 20_000_000),
+    }.get(resolution, (4_000_000, 6_000_000))
+    encoder = cmd[cmd.index("-c:v") + 1]
+    # Constant-QP/quality modes can ignore rate limits on hardware encoders.
+    for flag in ("-rc", "-rc_mode", "-qp", "-qp_i", "-qp_p", "-global_quality", "-crf"):
+        if flag in cmd:
+            index = cmd.index(flag)
+            del cmd[index : index + 2]
+    rate_mode = {
+        "h264_nvenc": ["-rc", "vbr"],
+        "h264_amf": ["-rc", "vbr_peak"],
+        "h264_vaapi": ["-rc_mode", "VBR"],
+    }.get(encoder, [])
+    cmd[-1:-1] = rate_mode + [
+        "-b:v",
+        str(target),
+        "-maxrate",
+        str(maximum),
+        "-bufsize",
+        str(maximum),
+    ]
 
 
 def playlist_duration(directory: str, name: str) -> float:
