@@ -42,36 +42,75 @@ private struct MacMainView: View {
     @State private var destination: MacDestination = .live
 
     var body: some View {
-        Group {
-            switch destination {
-            case .live:
-                WatchView()
-            case .settings:
-                SettingsView()
+        HStack(spacing: 0) {
+            if !model.isPlayerExpanded {
+                navigationRail
+            }
+            Group {
+                switch destination {
+                case .live:
+                    WatchView()
+                case .settings:
+                    SettingsView()
+                }
             }
         }
+        .background(MacGuideTheme.background)
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Menu {
-                    ForEach(MacDestination.allCases) { item in
-                        Button {
-                            destination = item
-                        } label: {
-                            Label(item.title, systemImage: item.icon)
-                        }
-                    }
-                } label: {
-                    Label("Navigation", systemImage: "line.3.horizontal")
-                }
-                .help("Navigate neTV")
+            ToolbarItem(placement: .principal) {
+                Text(destination.title)
+                    .font(.headline)
             }
-            ToolbarItem(placement: .automatic) {
-                TextField("Search channels and programs", text: $model.query)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 300)
+            if destination == .live {
+                ToolbarItem(placement: .automatic) {
+                    TextField("Search channels and programs", text: $model.query)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 260)
+                }
+                ToolbarItem(placement: .automatic) {
+                    Button {
+                        Task { await model.loadGuide() }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .disabled(model.isLoading)
+                    .help("Refresh guide")
+                    .accessibilityLabel("Refresh guide")
+                }
             }
         }
         .toolbar(model.isPlayerExpanded ? .hidden : .automatic)
+    }
+
+    private var navigationRail: some View {
+        VStack(spacing: 18) {
+            BrandMark(size: 34)
+                .padding(.bottom, 10)
+                .accessibilityLabel("neTV")
+            ForEach(MacDestination.allCases) { item in
+                if item == .settings {
+                    Spacer()
+                }
+                Button {
+                    destination = item
+                } label: {
+                    Image(systemName: item.icon)
+                        .font(.system(size: 18, weight: .medium))
+                        .frame(width: 42, height: 44)
+                }
+                .buttonStyle(MacGuideButtonStyle(isSelected: destination == item))
+                .help(item.title)
+                .accessibilityLabel(item.title)
+                .accessibilityValue(destination == item ? "Selected" : "")
+            }
+        }
+        .padding(.vertical, 22)
+        .frame(width: 64)
+        .frame(maxHeight: .infinity)
+        .background(MacGuideTheme.background)
+        .overlay(alignment: .trailing) {
+            MacGuideTheme.divider.frame(width: 1)
+        }
     }
 }
 #endif

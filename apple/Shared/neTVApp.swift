@@ -11,6 +11,7 @@ struct neTVApp: App {
                 .environmentObject(model)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
+                .frame(minWidth: 980, minHeight: 620)
         }
         .defaultSize(width: 1240, height: 780)
         #else

@@ -839,6 +839,7 @@ def _build_guide_rows(
             "name": s["name"],
             "icon": icon,
             "epg_id": epg_id,
+            "category_ids": [str(category_id) for category_id in (s.get("category_ids") or [])],
         }
         row = {"channel": ch, "programs": [], "programs_mobile": [], "index": idx}
 
@@ -855,6 +856,8 @@ def _build_guide_rows(
                     "desc": p.desc,
                     "start": p.start.strftime("%H:%M"),
                     "end": p.stop.strftime("%H:%M"),
+                    "start_timestamp": p.start.timestamp(),
+                    "end_timestamp": p.stop.timestamp(),
                     "left_pct": left_pct,
                     "width_pct": width_pct,
                 }
@@ -909,11 +912,29 @@ async def guide_rows_api(
                 get_cache()["live_streams"] = data["streams"]
                 get_cache()["epg_urls"] = parse_epg_urls(data.get("epg_urls", []))
 
-    streams, _, _ = _get_guide_streams(cats, username)
+    streams, ordered_cat_ids, _ = _get_guide_streams(cats, username)
     total_count = len(streams)
 
     if total_count == 0:
-        return JSONResponse({"rows": [], "total": 0, "start": start})
+        return JSONResponse({"rows": [], "categories": [], "total": 0, "start": start})
+
+    category_by_id = {
+        str(category["category_id"]): category
+        for category in get_cache().get("live_categories", [])
+    }
+    populated_category_ids = {
+        str(category_id)
+        for stream in streams
+        for category_id in (stream.get("category_ids") or [])
+    }
+    guide_categories = [
+        {
+            "category_id": category_id,
+            "category_name": category_by_id[category_id]["category_name"],
+        }
+        for category_id in ordered_cat_ids
+        if category_id in category_by_id and category_id in populated_category_ids
+    ]
 
     # Time window
     now = datetime.now(UTC)
@@ -923,7 +944,13 @@ async def guide_rows_api(
     rows = _build_guide_rows(streams, start, count, window_start, window_end)
 
     return JSONResponse(
-        {"rows": rows, "total": total_count, "start": start},
+        {
+            "rows": rows,
+            "categories": guide_categories,
+            "total": total_count,
+            "start": start,
+            "window_start_timestamp": window_start.timestamp(),
+        },
         headers={"Cache-Control": "no-store"},
     )
 

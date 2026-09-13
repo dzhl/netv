@@ -36,7 +36,12 @@ final class APIClient {
     func validateSession(server: String) async throws -> Bool { false }
     func login(server: String, username: String, password: String) async throws -> Bool { true }
     func logout(server: String) async {}
-    func guide(server: String) async throws -> [ChannelRow] { [] }
+    func guide(server: String) async throws -> GuideResponse {
+        try JSONDecoder().decode(
+            GuideResponse.self,
+            from: Data("{\"rows\":[],\"categories\":[],\"total\":0}".utf8)
+        )
+    }
     func reportPlaybackHealth(server: String, sessionID: String, health: PlaybackHealth) async throws -> PlaybackHealthResponse {
         PlaybackHealthResponse(bandwidthSaver: false)
     }
@@ -47,6 +52,7 @@ struct PlaybackStartChecks {
     @MainActor
     static func main() async throws {
         let model = AppModel()
+        try checkGuideFiltering(model)
         func selection(_ id: String) throws -> PlayerSelection {
             let data = Data("{\"stream_id\":\"\(id)\",\"name\":\"Test\",\"icon\":\"\"}".utf8)
             return PlayerSelection(channel: try JSONDecoder().decode(Channel.self, from: data), program: nil)
@@ -86,5 +92,35 @@ struct PlaybackStartChecks {
         await model.stopPlayback(sessionID: recovered.transcodeSessionID!)
         precondition(APIClient.active.isEmpty)
         print("Playback startup checks passed: cancellation, rapid tuning, failed release, recovery")
+    }
+
+    @MainActor
+    private static func checkGuideFiltering(_ model: AppModel) throws {
+        let data = Data("""
+            [
+              {"channel":{"stream_id":"news","name":"News","icon":"","category_ids":["1"]},
+               "programs":[
+                 {"title":"Headlines","desc":"","start":"00:00","end":"00:00","left_pct":0,"width_pct":50},
+                 {"title":"Evening report","desc":"","start":"00:00","end":"00:00","left_pct":50,"width_pct":50}
+               ]},
+              {"channel":{"stream_id":"sports","name":"Sports","icon":"","category_ids":["2","1"]},"programs":[]}
+            ]
+            """.utf8)
+        model.channels = try JSONDecoder().decode([ChannelRow].self, from: data)
+        model.play(model.channels[0])
+        let playing = model.selection
+        defer {
+            model.channels = []
+            model.query = ""
+            model.selection = nil
+        }
+        precondition(model.filteredChannels(in: nil).count == 2)
+        precondition(model.filteredChannels(in: "1").count == 2)
+        precondition(model.filteredChannels(in: "2").map(\.id) == ["sports"])
+        precondition(model.filteredChannels(in: "missing").isEmpty)
+        model.query = "EVENING"
+        precondition(model.filteredChannels(in: nil).map(\.id) == ["news"])
+        precondition(model.filteredChannels(in: "2").isEmpty)
+        precondition(model.selection == playing, "Changing categories must not interrupt playback")
     }
 }

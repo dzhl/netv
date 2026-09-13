@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -354,6 +355,86 @@ class TestGuide:
         assert resp.status_code == 200
         assert resp.text.count('class="guide-row') == 50
         assert resp.text.count('loading="lazy"') == 50
+
+    def test_guide_rows_include_category_metadata(self, auth_client):
+        cache_module.get_cache()["live_categories"] = [
+            {"category_id": "1", "category_name": "News"}
+        ]
+        cache_module.get_cache()["live_streams"] = [
+            {
+                "stream_id": 1,
+                "name": "CNN",
+                "category_ids": ["1"],
+                "epg_channel_id": "",
+            }
+        ]
+
+        resp = auth_client.get("/api/guide/rows?cats=1")
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["categories"] == [{"category_id": "1", "category_name": "News"}]
+        assert payload["rows"][0]["channel"]["category_ids"] == ["1"]
+
+    def test_guide_rows_categories_cover_all_pages(self, auth_client):
+        categories = [
+            {"category_id": "1", "category_name": "News"},
+            {"category_id": "2", "category_name": "Sports"},
+            {"category_id": "3", "category_name": "Unavailable"},
+        ]
+        cache_module.get_cache()["live_categories"] = categories
+        cache_module.get_cache()["live_streams"] = [
+            {
+                "stream_id": index,
+                "name": f"Channel {index}",
+                "category_ids": ["1" if index < 500 else "2"],
+            }
+            for index in range(501)
+        ] + [{"stream_id": 999, "name": "Hidden", "category_ids": ["3"]}]
+
+        with patch("main.auth.get_user_limits", return_value={"unavailable_groups": ["cat:3"]}):
+            first = auth_client.get("/api/guide/rows?cats=1,2,3&count=500").json()
+            second = auth_client.get("/api/guide/rows?cats=1,2,3&start=500&count=500").json()
+            reordered = auth_client.get("/api/guide/rows?cats=2,1,3&count=1").json()
+
+        assert first["total"] == second["total"] == 501
+        assert len(first["rows"]) == 500
+        assert len(second["rows"]) == 1
+        assert second["rows"][0]["channel"]["stream_id"] == 500
+        assert first["categories"] == second["categories"] == categories[:2]
+        assert reordered["categories"] == categories[1::-1]
+        assert reordered["rows"][0]["channel"]["stream_id"] == 500
+
+    def test_guide_rows_timestamps_anchor_local_timeline(self, auth_client):
+        from epg import Program
+
+        now = datetime(2026, 9, 14, 0, 15, tzinfo=UTC)
+        window_start = now.replace(minute=0)
+        program_start = window_start - timedelta(minutes=30)
+        program_end = window_start + timedelta(hours=1)
+        cache_module.get_cache()["live_streams"] = [
+            {"stream_id": 1, "name": "News", "category_ids": ["1"], "epg_channel_id": "news"}
+        ]
+        program = Program("news", "Overnight news", program_start, program_end)
+
+        with (
+            patch("main.datetime") as clock,
+            patch("main.epg.get_icons_batch", return_value={}),
+            patch("main.epg.get_programs_batch", return_value={"news": [program]}),
+        ):
+            clock.now.return_value = now
+            response = auth_client.get("/api/guide/rows?cats=1")
+
+        assert response.status_code == 200
+        payload = response.json()
+        listing = payload["rows"][0]["programs"][0]
+        assert payload["window_start_timestamp"] == window_start.timestamp()
+        assert listing["start_timestamp"] == program_start.timestamp()
+        assert listing["end_timestamp"] == program_end.timestamp()
+        assert listing["start"] == "23:30"
+        assert listing["end"] == "01:00"
+        assert listing["left_pct"] == 0
+        assert listing["width_pct"] == pytest.approx(100 / 3)
 
     def test_guide_uses_saved_filter(self, auth_client, tmp_path):
         user_dir = tmp_path / "users" / "testuser"

@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import OSLog
 
@@ -7,10 +8,17 @@ final class AppModel: ObservableObject {
     @Published var isCheckingSession = true
     @Published var isLoading = false
     @Published var channels: [ChannelRow] = []
+    @Published var guideCategories: [GuideCategory] = []
+    @Published var guideWindowStart = Date(
+        timeIntervalSince1970: floor(Date().timeIntervalSince1970 / 3600) * 3600
+    )
     @Published var query = ""
     @Published var errorMessage: String?
     @Published var selection: PlayerSelection?
     @Published var isPlayerExpanded = false
+    #if os(macOS)
+    @Published var playbackVolume: Double = 1
+    #endif
 
     // Keep the downgrade across player recreation and channel changes for this app run.
     private(set) var bandwidthSaver = false
@@ -37,8 +45,13 @@ final class AppModel: ObservableObject {
         guard !query.isEmpty else { return channels }
         return channels.filter {
             $0.channel.name.localizedCaseInsensitiveContains(query)
-                || ($0.currentProgram?.title.localizedCaseInsensitiveContains(query) ?? false)
+                || $0.programs.contains { $0.title.localizedCaseInsensitiveContains(query) }
         }
+    }
+
+    func filteredChannels(in categoryID: String?) -> [ChannelRow] {
+        guard let categoryID else { return filteredChannels }
+        return filteredChannels.filter { $0.channel.categoryIDs.contains(categoryID) }
     }
 
     func signIn(username: String, password: String) async {
@@ -63,7 +76,13 @@ final class AppModel: ObservableObject {
         errorMessage = nil
         defer { isLoading = false }
         do {
-            channels = try await client.guide(server: server)
+            let guide = try await client.guide(server: server)
+            channels = guide.rows
+            guideCategories = guide.categories
+            guideWindowStart = Date(
+                timeIntervalSince1970: guide.windowStartTimestamp
+                    ?? floor(Date().timeIntervalSince1970 / 3600) * 3600
+            )
             if selection == nil, let firstChannel = channels.first {
                 play(firstChannel)
             }
@@ -133,6 +152,7 @@ final class AppModel: ObservableObject {
     func signOut() async {
         await client.logout(server: server)
         channels = []
+        guideCategories = []
         isAuthenticated = false
     }
 

@@ -33,6 +33,7 @@ struct PlayerView: View {
                     .tint(.white)
             }
 
+            #if !os(macOS)
             VStack {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
@@ -64,7 +65,31 @@ struct PlayerView: View {
                 Spacer()
             }
             .foregroundStyle(.white)
+            #endif
         }
+        #if os(macOS)
+        .overlay(alignment: .bottomLeading) {
+            if player != nil {
+                MacVolumeControl(volume: $model.playbackVolume)
+                    .padding(12)
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if let quality {
+                Text(quality)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .foregroundStyle(.white)
+                    .background(.black.opacity(0.65), in: Capsule())
+                    .padding(12)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onChange(of: model.playbackVolume) { _, volume in
+            player?.volume = Float(volume)
+        }
+        #endif
         .task {
             await runPlayback()
         }
@@ -106,7 +131,11 @@ struct PlayerView: View {
                 item.preferredForwardBufferDuration = 12
                 var currentPlayer = AVPlayer(playerItem: item)
                 currentPlayer.isMuted = false
+                #if os(macOS)
+                currentPlayer.volume = Float(model.playbackVolume)
+                #else
                 currentPlayer.volume = 1
+                #endif
                 player = currentPlayer
                 currentPlayer.play()
                 var sampler = PlaybackHealthSampler()
@@ -131,6 +160,8 @@ struct PlayerView: View {
                                 url: url, options: options, currentItem: item
                             )
                             try Task.checkCancellation()
+                            replacement.volume = currentPlayer.volume
+                            replacement.isMuted = currentPlayer.isMuted
                             currentPlayer.pause()
                             currentPlayer = replacement
                             item = replacement.currentItem!
@@ -218,11 +249,49 @@ struct PlayerView: View {
 }
 
 #if os(macOS)
-private struct PlayerController: View {
+private struct PlayerController: NSViewRepresentable {
     let player: AVPlayer
 
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .none
+        view.videoGravity = .resizeAspect
+        view.player = player
+        return view
+    }
+
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        if view.player !== player {
+            view.player = player
+        }
+    }
+}
+
+private struct MacVolumeControl: View {
+    @Binding var volume: Double
+
     var body: some View {
-        VideoPlayer(player: player)
+        HStack(spacing: 10) {
+            Image(systemName: volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.system(size: 13))
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            Slider(value: $volume, in: 0...1)
+                .labelsHidden()
+                .controlSize(.small)
+                .tint(.white)
+                .frame(width: 90)
+                .accessibilityLabel("Volume")
+                .accessibilityValue("\(Int(volume * 100)) percent")
+            Text("\(Int(volume * 100))%")
+                .font(.caption2.monospacedDigit())
+                .frame(width: 30, alignment: .trailing)
+                .accessibilityHidden(true)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 #elseif os(iOS)

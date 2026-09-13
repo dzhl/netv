@@ -5,6 +5,9 @@ import AppKit
 
 struct WatchView: View {
     @EnvironmentObject private var model: AppModel
+    #if os(macOS)
+    @State private var selectedCategoryID: String?
+    #endif
 
     var body: some View {
         #if os(macOS)
@@ -22,39 +25,49 @@ struct WatchView: View {
     #if os(macOS)
     private var macLayout: some View {
         GeometryReader { proxy in
-            let heroHeight = min(proxy.size.height * 0.48, 430)
+            let sidebarWidth = min(250, max(200, proxy.size.width * 0.21))
+            let contentWidth = max(proxy.size.width - sidebarWidth, 0)
+            let heroHeight = min(240, max(180, proxy.size.height * 0.29))
+            let previewWidth = min(contentWidth * 0.42, heroHeight * 16 / 9)
             ZStack(alignment: .topLeading) {
-                if !model.isPlayerExpanded {
+                HStack(spacing: 0) {
+                    MacGuideSidebar(selectedCategoryID: $selectedCategoryID)
+                        .frame(width: sidebarWidth)
                     VStack(spacing: 0) {
                         HStack(spacing: 0) {
-                            MacHeroInfo(selection: model.selection)
-                                .frame(width: proxy.size.width * 0.44, height: heroHeight)
-                            Color.black
-                                .frame(width: proxy.size.width * 0.56, height: heroHeight)
+                            MacHeroInfo(selection: currentSelection)
+                                .frame(width: contentWidth - previewWidth, height: heroHeight)
+                            Color.clear
+                                .frame(width: previewWidth, height: heroHeight)
                         }
-                        GuideView()
+                        MacGuideTheme.divider.frame(height: 1)
+                        MacGuideView(selectedCategoryID: selectedCategoryID)
                             .frame(
-                                width: proxy.size.width,
-                                height: max(proxy.size.height - heroHeight, 0)
+                                width: contentWidth,
+                                height: max(proxy.size.height - heroHeight - 1, 0)
                             )
                     }
-                    .transition(.opacity)
                 }
+                .opacity(model.isPlayerExpanded ? 0 : 1)
+                .allowsHitTesting(!model.isPlayerExpanded)
+                .disabled(model.isPlayerExpanded)
+                .accessibilityHidden(model.isPlayerExpanded)
 
+                // Keep one player mounted while its frame changes, avoiding a stream retune.
                 ZStack(alignment: .topTrailing) {
                     playerSurface
                     expandButton
                 }
                 .frame(
-                    width: model.isPlayerExpanded ? proxy.size.width : proxy.size.width * 0.56,
+                    width: model.isPlayerExpanded ? proxy.size.width : previewWidth,
                     height: model.isPlayerExpanded ? proxy.size.height : heroHeight
                 )
                 .background(.black)
                 .clipped()
-                .offset(x: model.isPlayerExpanded ? 0 : proxy.size.width * 0.44)
+                .offset(x: model.isPlayerExpanded ? 0 : proxy.size.width - previewWidth)
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
-            .background(Theme.backgroundGradient)
+            .background(MacGuideTheme.background)
         }
         .toolbar(model.isPlayerExpanded ? .hidden : .automatic)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
@@ -62,6 +75,14 @@ struct WatchView: View {
                 model.isPlayerExpanded = false
             }
         }
+    }
+
+    private var currentSelection: PlayerSelection? {
+        guard let selection = model.selection else { return nil }
+        guard let row = model.channels.first(where: { $0.id == selection.id }) else {
+            return selection
+        }
+        return PlayerSelection(channel: row.channel, program: row.currentProgram)
     }
     #endif
 
@@ -185,51 +206,51 @@ struct WatchView: View {
         let selection: PlayerSelection?
 
         var body: some View {
-            ZStack {
-                LinearGradient(
-                    colors: [Theme.surface, Theme.background, .black],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                VStack(alignment: .leading, spacing: 13) {
-                    Spacer()
-                    if let selection {
-                        HStack(spacing: 10) {
-                            LiveBadge()
-                            Text(selection.channel.name.uppercased())
-                                .font(.caption.weight(.semibold))
+            VStack(alignment: .leading, spacing: 14) {
+                if let selection {
+                    HStack(alignment: .center, spacing: 16) {
+                        ChannelLogo(channel: selection.channel, size: 64)
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(selection.channel.name)
+                                .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.secondaryText)
+                                .lineLimit(1)
+                            Text(selection.program?.title ?? "Live TV")
+                                .font(.system(size: 24, weight: .bold))
+                                .lineLimit(2)
+                            HStack(spacing: 10) {
+                                LiveBadge()
+                                if let program = selection.program {
+                                    Text(program.timeRange)
+                                        .font(.caption.weight(.medium))
+                                        .lineLimit(1)
+                                }
+                            }
                         }
-                        Text(selection.program?.title ?? selection.channel.name)
-                            .font(.system(size: 38, weight: .bold, design: .rounded))
-                            .lineLimit(2)
-                        if let program = selection.program {
-                            Text("\(program.start) – \(program.end)")
-                                .font(.headline)
-                                .foregroundStyle(Theme.accent)
-                            Text(program.desc.isEmpty ? "Live programming" : program.desc)
-                                .font(.body)
-                                .foregroundStyle(Theme.secondaryText)
-                                .lineLimit(4)
-                        }
-                    } else {
-                        Text("Live TV")
-                            .font(.system(size: 38, weight: .bold, design: .rounded))
-                        Text("Choose a program from the guide below.")
-                            .foregroundStyle(Theme.secondaryText)
                     }
-                    Spacer()
+                    if let program = selection.program, !program.desc.isEmpty {
+                        Text(program.desc)
+                            .font(.callout)
+                            .foregroundStyle(Theme.secondaryText)
+                            .lineLimit(2)
+                    }
+                } else {
+                    Text("Live TV")
+                        .font(.system(size: 26, weight: .bold))
+                    Text("Choose a channel from the guide to start watching.")
+                        .foregroundStyle(Theme.secondaryText)
                 }
-                .padding(34)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .background(MacGuideTheme.background)
         }
     }
     #endif
 
     private func playerHeight(for size: CGSize) -> CGFloat {
         #if os(tvOS)
-        min(size.height * 0.58, 580)
+        min(size.height * 0.36, 360)
         #elseif os(macOS)
         min(size.height * 0.58, 540)
         #else

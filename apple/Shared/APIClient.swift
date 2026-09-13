@@ -83,7 +83,7 @@ final class APIClient {
         return http.statusCode == 200
     }
 
-    func guide(server: String) async throws -> [ChannelRow] {
+    func guide(server: String) async throws -> GuideResponse {
         guard let baseURL = normalizedServerURL(server) else {
             throw APIError.invalidServer
         }
@@ -97,8 +97,24 @@ final class APIClient {
             URLQueryItem(name: "cats", value: categories)
         ]
         guard let url = components?.url else { throw APIError.invalidServer }
-        let response: GuideResponse = try await get(url: url)
-        return response.rows
+        var guide: GuideResponse = try await get(url: url)
+        while guide.rows.count < guide.total {
+            try Task.checkCancellation()
+            components?.queryItems = [
+                URLQueryItem(name: "start", value: String(guide.rows.count)),
+                URLQueryItem(name: "count", value: "500"),
+                URLQueryItem(name: "offset", value: "0"),
+                URLQueryItem(name: "cats", value: categories)
+            ]
+            guard let pageURL = components?.url else { throw APIError.invalidServer }
+            let page: GuideResponse = try await get(url: pageURL)
+            guard !page.rows.isEmpty, page.total == guide.total,
+                  page.windowStartTimestamp == guide.windowStartTimestamp else {
+                throw APIError.server("The guide changed while loading. Please refresh the guide.")
+            }
+            guide.rows.append(contentsOf: page.rows)
+        }
+        return guide
     }
 
     func playbackConfiguration(server: String, channelID: String, bandwidthSaver: Bool = false) async throws -> PlaybackConfiguration {

@@ -2,6 +2,32 @@
 
 Native SwiftUI clients for iPhone, iPad, Apple TV, and Mac. All apps share the same authenticated neTV guide, channel artwork, program metadata, and AVPlayer playback while adapting navigation and layout to each platform.
 
+On Apple TV, Live TV uses a category sidebar and compact channel rows. Each row
+keeps the channel logo and current program beside a three-hour schedule timeline,
+with remote focus moving directly between categories and channels.
+
+On Mac, a narrow Live TV / Settings navigation rail sits beside a full-height
+clickable category column with its own scrollbar. Categories stay visible while
+the adjacent channel list scrolls, and a single click switches categories locally
+without waiting for a network request. The slate-colored guide uses compact logo-led channel rows,
+purple current-program highlights, half-hour time markers, and a now indicator.
+A small player preview sits beside program details above the guide. Selecting a
+category only filters the list; selecting a channel tunes playback. Search covers
+channel names and all loaded program titles, and channel counts follow the search.
+Full-screen playback keeps the same player alive and restores the selected
+category and scroll position when you return.
+
+The Mac video surface has no native play/pause toolbar or full-width title
+overlay. Volume lives in a small bottom-left panel with a translucent background
+limited to that panel; the rest of the picture stays unobscured. The volume level
+also carries across channel changes and adaptive quality switches.
+
+Category names and ordering follow the web settings. Use the updated neTV server
+for category metadata and device-local program times; older servers remain
+playable through All Channels. The Apple client loads every guide page rather
+than stopping at the first 500 channels. Use the toolbar refresh button to reload
+channels and the three-hour schedule.
+
 ## Open and run
 
 1. Generate the project with `cd apple && xcodegen generate`.
@@ -120,4 +146,11 @@ app model. On a Mac, compile and run it with:
 ```sh
 xcrun swiftc -parse-as-library Shared/Models.swift Shared/AppModel.swift Tests/PlaybackStartChecks.swift -o /tmp/netv-playback-start-checks
 /tmp/netv-playback-start-checks
+```
+
+The guide decoding and timeline checks run separately:
+
+```sh
+xcrun swiftc -parse-as-library Shared/Models.swift Tests/GuideDataChecks.swift -o /tmp/netv-guide-checks
+/tmp/netv-guide-checks
 ```
