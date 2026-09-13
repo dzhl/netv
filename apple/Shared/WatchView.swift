@@ -5,13 +5,14 @@ import AppKit
 
 struct WatchView: View {
     @EnvironmentObject private var model: AppModel
-    #if os(macOS)
+    #if os(macOS) || os(tvOS)
     @State private var selectedCategoryID: String?
+    @FocusState private var isExpandButtonFocused: Bool
     #endif
 
     var body: some View {
-        #if os(macOS)
-        macLayout
+        #if os(macOS) || os(tvOS)
+        largeScreenLayout
         #elseif os(iOS)
         standardLayout
             .fullScreenCover(isPresented: $model.isPlayerExpanded) {
@@ -22,26 +23,30 @@ struct WatchView: View {
         #endif
     }
 
-    #if os(macOS)
-    private var macLayout: some View {
+    #if os(macOS) || os(tvOS)
+    private var largeScreenLayout: some View {
         GeometryReader { proxy in
-            let sidebarWidth = min(250, max(200, proxy.size.width * 0.21))
+            let sidebarWidth = min(
+                GuideMetrics.scaled(250), max(GuideMetrics.scaled(200), proxy.size.width * 0.21)
+            )
             let contentWidth = max(proxy.size.width - sidebarWidth, 0)
-            let heroHeight = min(240, max(180, proxy.size.height * 0.29))
+            let heroHeight = min(
+                GuideMetrics.scaled(240), max(GuideMetrics.scaled(180), proxy.size.height * 0.29)
+            )
             let previewWidth = min(contentWidth * 0.42, heroHeight * 16 / 9)
             ZStack(alignment: .topLeading) {
                 HStack(spacing: 0) {
-                    MacGuideSidebar(selectedCategoryID: $selectedCategoryID)
+                    GuideSidebar(selectedCategoryID: $selectedCategoryID)
                         .frame(width: sidebarWidth)
                     VStack(spacing: 0) {
                         HStack(spacing: 0) {
-                            MacHeroInfo(selection: currentSelection)
+                            GuideHeroInfo(selection: currentSelection)
                                 .frame(width: contentWidth - previewWidth, height: heroHeight)
                             Color.clear
                                 .frame(width: previewWidth, height: heroHeight)
                         }
-                        MacGuideTheme.divider.frame(height: 1)
-                        MacGuideView(selectedCategoryID: selectedCategoryID)
+                        GuideTheme.divider.frame(height: 1)
+                        ChannelGuideView(selectedCategoryID: selectedCategoryID)
                             .frame(
                                 width: contentWidth,
                                 height: max(proxy.size.height - heroHeight - 1, 0)
@@ -67,14 +72,20 @@ struct WatchView: View {
                 .offset(x: model.isPlayerExpanded ? 0 : proxy.size.width - previewWidth)
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
-            .background(MacGuideTheme.background)
+            .background(GuideTheme.background)
         }
+        #if os(macOS)
         .toolbar(model.isPlayerExpanded ? .hidden : .automatic)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in
             withAnimation(.easeInOut(duration: 0.2)) {
                 model.isPlayerExpanded = false
             }
         }
+        #else
+        .onChange(of: model.isPlayerExpanded) { _, expanded in
+            isExpandButtonFocused = expanded
+        }
+        #endif
     }
 
     private var currentSelection: PlayerSelection? {
@@ -168,9 +179,18 @@ struct WatchView: View {
                 .padding(11)
                 .background(.black.opacity(0.62), in: Circle())
             }
+            #if os(macOS) || os(tvOS)
+            .buttonStyle(GuideButtonStyle(isFocused: isExpandButtonFocused))
+            .focused($isExpandButtonFocused)
+            #else
             .buttonStyle(.plain)
+            #endif
             .foregroundStyle(.white)
+            #if os(tvOS)
+            .padding(model.isPlayerExpanded ? 48 : 16)
+            #else
             .padding(16)
+            #endif
             .accessibilityLabel(model.isPlayerExpanded ? "Exit full screen" : "Full screen")
         }
     }
@@ -201,22 +221,22 @@ struct WatchView: View {
         }
     }
 
-    #if os(macOS)
-    private struct MacHeroInfo: View {
+    #if os(macOS) || os(tvOS)
+    private struct GuideHeroInfo: View {
         let selection: PlayerSelection?
 
         var body: some View {
             VStack(alignment: .leading, spacing: 14) {
                 if let selection {
                     HStack(alignment: .center, spacing: 16) {
-                        ChannelLogo(channel: selection.channel, size: 64)
+                        ChannelLogo(channel: selection.channel, size: GuideMetrics.scaled(64))
                         VStack(alignment: .leading, spacing: 7) {
                             Text(selection.channel.name)
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.secondaryText)
                                 .lineLimit(1)
                             Text(selection.program?.title ?? "Live TV")
-                                .font(.system(size: 24, weight: .bold))
+                                .font(.system(size: GuideMetrics.fontSize(24), weight: .bold))
                                 .lineLimit(2)
                             HStack(spacing: 10) {
                                 LiveBadge()
@@ -236,14 +256,14 @@ struct WatchView: View {
                     }
                 } else {
                     Text("Live TV")
-                        .font(.system(size: 26, weight: .bold))
+                        .font(.system(size: GuideMetrics.fontSize(26), weight: .bold))
                     Text("Choose a channel from the guide to start watching.")
                         .foregroundStyle(Theme.secondaryText)
                 }
             }
-            .padding(24)
+            .padding(GuideMetrics.scaled(24))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .background(MacGuideTheme.background)
+            .background(GuideTheme.background)
         }
     }
     #endif

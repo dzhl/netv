@@ -33,7 +33,7 @@ struct PlayerView: View {
                     .tint(.white)
             }
 
-            #if !os(macOS)
+            #if os(iOS)
             VStack {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
@@ -67,11 +67,16 @@ struct PlayerView: View {
             .foregroundStyle(.white)
             #endif
         }
-        #if os(macOS)
+        #if os(macOS) || os(tvOS)
         .overlay(alignment: .bottomLeading) {
             if player != nil {
+                #if os(macOS)
                 MacVolumeControl(volume: $model.playbackVolume)
                     .padding(12)
+                #else
+                TVVolumeControl(volume: $model.playbackVolume)
+                    .padding(model.isPlayerExpanded ? 48 : 18)
+                #endif
             }
         }
         .overlay(alignment: .topLeading) {
@@ -82,12 +87,25 @@ struct PlayerView: View {
                     .padding(.vertical, 4)
                     .foregroundStyle(.white)
                     .background(.black.opacity(0.65), in: Capsule())
+                    #if os(tvOS)
+                    .padding(model.isPlayerExpanded ? 48 : 18)
+                    #else
                     .padding(12)
+                    #endif
                     .allowsHitTesting(false)
             }
         }
         .onChange(of: model.playbackVolume) { _, volume in
             player?.volume = Float(volume)
+        }
+        #endif
+        #if os(tvOS)
+        .onChange(of: model.playPauseRequest) { _, _ in
+            if player?.timeControlStatus == .paused {
+                player?.play()
+            } else {
+                player?.pause()
+            }
         }
         #endif
         .task {
@@ -131,7 +149,7 @@ struct PlayerView: View {
                 item.preferredForwardBufferDuration = 12
                 var currentPlayer = AVPlayer(playerItem: item)
                 currentPlayer.isMuted = false
-                #if os(macOS)
+                #if os(macOS) || os(tvOS)
                 currentPlayer.volume = Float(model.playbackVolume)
                 #else
                 currentPlayer.volume = 1
@@ -162,11 +180,12 @@ struct PlayerView: View {
                             try Task.checkCancellation()
                             replacement.volume = currentPlayer.volume
                             replacement.isMuted = currentPlayer.isMuted
+                            let wasPaused = currentPlayer.timeControlStatus == .paused
                             currentPlayer.pause()
                             currentPlayer = replacement
                             item = replacement.currentItem!
                             player = replacement
-                            replacement.play()
+                            if !wasPaused { replacement.play() }
                             configuration = PlaybackConfiguration(
                                 url: url, cookieHeader: configuration.cookieHeader,
                                 transcodeSessionID: sessionID
@@ -317,12 +336,63 @@ private struct PlayerController: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
+        controller.showsPlaybackControls = false
+        controller.videoGravity = .resizeAspect
         controller.player = player
         return controller
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
-        controller.player = player
+        if controller.player !== player {
+            controller.player = player
+        }
+    }
+}
+
+private struct TVVolumeControl: View {
+    @Binding var volume: Double
+    @FocusState private var focusedAdjustment: Adjustment?
+
+    private enum Adjustment: Hashable {
+        case down
+        case up
+    }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            volumeButton(.down, icon: "minus", label: "Decrease volume") {
+                adjustVolume(by: -0.1)
+            }
+            Text("\(Int((volume * 100).rounded()))%")
+                .font(.system(size: 22, weight: .medium).monospacedDigit())
+                .frame(width: 62)
+                .accessibilityLabel("Volume")
+                .accessibilityValue("\(Int((volume * 100).rounded())) percent")
+            volumeButton(.up, icon: "plus", label: "Increase volume") {
+                adjustVolume(by: 0.1)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(10)
+        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
+        .focusSection()
+    }
+
+    private func adjustVolume(by delta: Double) {
+        volume = min(1, max(0, ((volume + delta) * 100).rounded() / 100))
+    }
+
+    private func volumeButton(
+        _ adjustment: Adjustment, icon: String, label: String, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 22))
+                .frame(width: 52, height: 44)
+        }
+        .buttonStyle(GuideButtonStyle(isFocused: focusedAdjustment == adjustment))
+        .focused($focusedAdjustment, equals: adjustment)
+        .accessibilityLabel(label)
     }
 }
 #endif

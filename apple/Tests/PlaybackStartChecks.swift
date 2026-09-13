@@ -103,24 +103,37 @@ struct PlaybackStartChecks {
                  {"title":"Headlines","desc":"","start":"00:00","end":"00:00","left_pct":0,"width_pct":50},
                  {"title":"Evening report","desc":"","start":"00:00","end":"00:00","left_pct":50,"width_pct":50}
                ]},
-              {"channel":{"stream_id":"sports","name":"Sports","icon":"","category_ids":["2","1"]},"programs":[]}
+              {"channel":{"stream_id":"sports","name":"Sports","icon":"","category_ids":["2","1"]},"programs":[]},
+              {"channel":{"stream_id":"other-news","name":"More News","icon":"","category_ids":["3"]},"programs":[]}
             ]
             """.utf8)
         model.channels = try JSONDecoder().decode([ChannelRow].self, from: data)
+        model.guideCategories = try JSONDecoder().decode([GuideCategory].self, from: Data("""
+            [
+              {"category_id":"1","category_name":"News"},
+              {"category_id":"2","category_name":"Sports"},
+              {"category_id":"3","category_name":" news "}
+            ]
+            """.utf8))
         model.play(model.channels[0])
         let playing = model.selection
         defer {
             model.channels = []
+            model.guideCategories = []
             model.query = ""
             model.selection = nil
         }
-        precondition(model.filteredChannels(in: nil).count == 2)
+        precondition(model.filteredChannels(in: nil).count == 3)
         precondition(model.filteredChannels(in: "1").count == 2)
         precondition(model.filteredChannels(in: "2").map(\.id) == ["sports"])
         precondition(model.filteredChannels(in: "missing").isEmpty)
+        precondition(model.guideCategoryGroups.count == 2)
+        let newsGroup = model.guideCategoryGroups[0]
+        precondition(model.filteredChannels(in: newsGroup.id).count == 3)
         model.query = "EVENING"
         precondition(model.filteredChannels(in: nil).map(\.id) == ["news"])
         precondition(model.filteredChannels(in: "2").isEmpty)
+        precondition(model.filteredChannels(in: newsGroup.id).map(\.id) == ["news"])
         precondition(model.selection == playing, "Changing categories must not interrupt playback")
     }
 }

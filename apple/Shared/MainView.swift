@@ -1,16 +1,14 @@
 import SwiftUI
 
 struct MainView: View {
+    @EnvironmentObject private var model: AppModel
+
     var body: some View {
         #if os(tvOS)
-        TabView {
-            WatchView()
-                .tabItem { Label("Live TV", systemImage: "dot.radiowaves.left.and.right") }
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
-        }
+        GuideMainView()
+            .ignoresSafeArea(.container, edges: model.isPlayerExpanded ? .all : [])
         #elseif os(macOS)
-        MacMainView()
+        GuideMainView()
         #else
         TabView {
             NavigationStack {
@@ -27,8 +25,8 @@ struct MainView: View {
     }
 }
 
-#if os(macOS)
-private enum MacDestination: String, CaseIterable, Identifiable {
+#if os(macOS) || os(tvOS)
+private enum GuideDestination: String, CaseIterable, Identifiable {
     case live
     case settings
 
@@ -37,9 +35,13 @@ private enum MacDestination: String, CaseIterable, Identifiable {
     var icon: String { self == .live ? "dot.radiowaves.left.and.right" : "gearshape.fill" }
 }
 
-private struct MacMainView: View {
+private struct GuideMainView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var destination: MacDestination = .live
+    @State private var destination: GuideDestination = .live
+    @FocusState private var focusedControl: String?
+    #if os(tvOS)
+    @State private var isSearchPresented = false
+    #endif
 
     var body: some View {
         HStack(spacing: 0) {
@@ -55,7 +57,9 @@ private struct MacMainView: View {
                 }
             }
         }
-        .background(MacGuideTheme.background)
+        .background(GuideTheme.background.ignoresSafeArea())
+        .tint(GuideTheme.program)
+        #if os(macOS)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Text(destination.title)
@@ -80,37 +84,84 @@ private struct MacMainView: View {
             }
         }
         .toolbar(model.isPlayerExpanded ? .hidden : .automatic)
+        #else
+        .sheet(isPresented: $isSearchPresented) {
+            VStack(alignment: .leading, spacing: 30) {
+                Text("Search Live TV")
+                    .font(.title.bold())
+                TextField("Channels and programs", text: $model.query)
+                Button("Done") { isSearchPresented = false }
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(60)
+            .background(GuideTheme.background)
+            .onExitCommand { isSearchPresented = false }
+        }
+        .onExitCommand {
+            if model.isPlayerExpanded {
+                model.isPlayerExpanded = false
+            } else {
+                destination = .live
+                focusedControl = GuideDestination.live.rawValue
+            }
+        }
+        .onPlayPauseCommand {
+            if destination == .live {
+                model.playPauseRequest = UUID()
+            }
+        }
+        #endif
     }
 
     private var navigationRail: some View {
-        VStack(spacing: 18) {
-            BrandMark(size: 34)
+        VStack(spacing: GuideMetrics.scaled(18)) {
+            BrandMark(size: GuideMetrics.scaled(34))
                 .padding(.bottom, 10)
                 .accessibilityLabel("neTV")
-            ForEach(MacDestination.allCases) { item in
+            ForEach(GuideDestination.allCases) { item in
                 if item == .settings {
+                    #if os(tvOS)
+                    railButton("Search", icon: "magnifyingglass", id: "search") {
+                        isSearchPresented = true
+                    }
+                    railButton("Refresh guide", icon: "arrow.clockwise", id: "refresh") {
+                        Task { await model.loadGuide() }
+                    }
+                    .disabled(model.isLoading)
+                    #endif
                     Spacer()
                 }
-                Button {
+                railButton(item.title, icon: item.icon, id: item.rawValue, isSelected: destination == item) {
                     destination = item
-                } label: {
-                    Image(systemName: item.icon)
-                        .font(.system(size: 18, weight: .medium))
-                        .frame(width: 42, height: 44)
                 }
-                .buttonStyle(MacGuideButtonStyle(isSelected: destination == item))
-                .help(item.title)
-                .accessibilityLabel(item.title)
-                .accessibilityValue(destination == item ? "Selected" : "")
             }
         }
-        .padding(.vertical, 22)
-        .frame(width: 64)
+        .padding(.vertical, GuideMetrics.scaled(22))
+        .frame(width: GuideMetrics.scaled(64))
         .frame(maxHeight: .infinity)
-        .background(MacGuideTheme.background)
+        .background(GuideTheme.background)
         .overlay(alignment: .trailing) {
-            MacGuideTheme.divider.frame(width: 1)
+            GuideTheme.divider.frame(width: 1)
         }
+        .focusSection()
+    }
+
+    private func railButton(
+        _ title: String, icon: String, id: String,
+        isSelected: Bool = false, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: GuideMetrics.fontSize(18), weight: .medium))
+                .frame(width: GuideMetrics.scaled(42), height: GuideMetrics.scaled(44))
+        }
+        .buttonStyle(GuideButtonStyle(isSelected: isSelected, isFocused: focusedControl == id))
+        .focused($focusedControl, equals: id)
+        #if os(macOS)
+        .help(title)
+        #endif
+        .accessibilityLabel(title)
+        .accessibilityValue(isSelected ? "Selected" : "")
     }
 }
 #endif

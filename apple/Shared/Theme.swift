@@ -15,14 +15,32 @@ enum Theme {
     )
 }
 
-#if os(macOS)
-enum MacGuideTheme {
+#if os(macOS) || os(tvOS)
+enum GuideTheme {
     static let background = Color(red: 0.10, green: 0.11, blue: 0.14)
     static let sidebar = Color(red: 0.13, green: 0.15, blue: 0.18)
     static let surface = Color(red: 0.18, green: 0.20, blue: 0.24)
     static let selection = Color(red: 0.29, green: 0.33, blue: 0.38)
     static let program = Color(red: 0.57, green: 0.42, blue: 0.87)
     static let divider = Color.white.opacity(0.08)
+}
+
+enum GuideMetrics {
+    static func scaled(_ value: CGFloat) -> CGFloat {
+        #if os(tvOS)
+        value * 1.5
+        #else
+        value
+        #endif
+    }
+
+    static func fontSize(_ value: CGFloat) -> CGFloat {
+        #if os(tvOS)
+        max(20, value * 1.5)
+        #else
+        value
+        #endif
+    }
 }
 #endif
 

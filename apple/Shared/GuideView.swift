@@ -5,10 +5,8 @@ struct GuideView: View {
 
     var body: some View {
         Group {
-            #if os(tvOS)
-            TVGuideView()
-            #elseif os(macOS)
-            MacGuideView()
+            #if os(tvOS) || os(macOS)
+            ChannelGuideView()
             #else
             PhoneGuideView()
             #endif
@@ -18,10 +16,15 @@ struct GuideView: View {
     }
 }
 
-#if os(macOS)
-struct MacGuideSidebar: View {
+#if os(macOS) || os(tvOS)
+struct GuideSidebar: View {
     @EnvironmentObject private var model: AppModel
     @Binding var selectedCategoryID: String?
+    @FocusState private var focusedCategory: CategoryFocus?
+
+    private enum CategoryFocus: Hashable {
+        case category(String?)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -31,7 +34,7 @@ struct MacGuideSidebar: View {
                     .tracking(2)
                     .foregroundStyle(Theme.secondaryText)
                 Text("Categories")
-                    .font(.system(size: 26, weight: .bold))
+                    .font(.system(size: GuideMetrics.fontSize(26), weight: .bold))
             }
             .padding(.horizontal, 20)
 
@@ -49,7 +52,7 @@ struct MacGuideSidebar: View {
                         .padding(.top, 20)
                         .padding(.bottom, 5)
                     let counts = categoryCounts
-                    ForEach(model.guideCategories) { category in
+                    ForEach(model.guideCategoryGroups) { category in
                         categoryButton(
                             id: category.id, name: category.name,
                             count: counts[category.id, default: 0], icon: "tv"
@@ -74,13 +77,14 @@ struct MacGuideSidebar: View {
         }
         .padding(.vertical, 24)
         .frame(maxHeight: .infinity)
-        .background(MacGuideTheme.sidebar)
+        .background(GuideTheme.sidebar)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Channel categories")
         .overlay(alignment: .trailing) {
-            MacGuideTheme.divider.frame(width: 1)
+            GuideTheme.divider.frame(width: 1)
         }
-        .onChange(of: model.guideCategories) { _, categories in
+        .focusSection()
+        .onChange(of: model.guideCategoryGroups) { _, categories in
             if let selectedCategoryID,
                !categories.contains(where: { $0.id == selectedCategoryID }) {
                 self.selectedCategoryID = nil
@@ -90,8 +94,14 @@ struct MacGuideSidebar: View {
 
     private var categoryCounts: [String: Int] {
         var counts: [String: Int] = [:]
+        var groupByCategoryID: [String: String] = [:]
+        for group in model.guideCategoryGroups {
+            for id in group.categoryIDs {
+                groupByCategoryID[id] = group.id
+            }
+        }
         for row in model.filteredChannels {
-            for id in Set(row.channel.categoryIDs) {
+            for id in Set(row.channel.categoryIDs.compactMap { groupByCategoryID[$0] }) {
                 counts[id, default: 0] += 1
             }
         }
@@ -104,11 +114,11 @@ struct MacGuideSidebar: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: icon)
-                    .font(.system(size: 13))
-                    .frame(width: 18)
+                    .font(.system(size: GuideMetrics.fontSize(13)))
+                    .frame(width: GuideMetrics.scaled(18))
                     .foregroundStyle(Theme.secondaryText)
                 Text(name)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: GuideMetrics.fontSize(13), weight: .semibold))
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text(count.formatted())
@@ -116,31 +126,53 @@ struct MacGuideSidebar: View {
                     .foregroundStyle(Theme.secondaryText)
             }
             .padding(.horizontal, 12)
-            .frame(minHeight: 44)
+            .frame(minHeight: GuideMetrics.scaled(44))
             .padding(.vertical, 3)
             .contentShape(Rectangle())
         }
-        .buttonStyle(MacGuideButtonStyle(isSelected: selectedCategoryID == id))
+        .buttonStyle(GuideButtonStyle(
+            isSelected: selectedCategoryID == id, isFocused: focusedCategory == .category(id)
+        ))
+        .focused($focusedCategory, equals: .category(id))
+        #if os(macOS)
         .help(name)
+        #endif
         .accessibilityLabel("\(name), \(count) channels")
         .accessibilityValue(selectedCategoryID == id ? "Selected" : "")
     }
 }
 
-struct MacGuideView: View {
+struct ChannelGuideView: View {
     @EnvironmentObject private var model: AppModel
     var selectedCategoryID: String? = nil
+    @FocusState private var focusedChannelID: String?
+    @State private var lastFocusedChannelID: String?
 
-    private let rowHeight: CGFloat = 74
+    private var rowHeight: CGFloat { GuideMetrics.scaled(74) }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             GeometryReader { proxy in
-                guideContent(date: context.date, channelWidth: min(220, proxy.size.width * 0.27))
+                guideContent(
+                    date: context.date,
+                    channelWidth: min(GuideMetrics.scaled(220), proxy.size.width * 0.27)
+                )
             }
         }
-        .background(MacGuideTheme.background)
+        .background(GuideTheme.background)
         .refreshable { await model.loadGuide() }
+        .focusSection()
+        .onChange(of: focusedChannelID) { _, id in
+            if let id { lastFocusedChannelID = id }
+        }
+        #if os(tvOS)
+        .onChange(of: model.isPlayerExpanded) { _, expanded in
+            if !expanded, let lastFocusedChannelID,
+               visibleChannels.contains(where: { $0.id == lastFocusedChannelID }) {
+                focusedChannelID = lastFocusedChannelID
+            }
+        }
+        #endif
     }
 
     private var visibleChannels: [ChannelRow] {
@@ -148,7 +180,7 @@ struct MacGuideView: View {
     }
 
     private var categoryName: String {
-        model.guideCategories.first(where: { $0.id == selectedCategoryID })?.name ?? "All Channels"
+        model.guideCategoryGroups.first(where: { $0.id == selectedCategoryID })?.name ?? "All Channels"
     }
 
     private func guideContent(date: Date, channelWidth: CGFloat) -> some View {
@@ -172,7 +204,7 @@ struct MacGuideView: View {
                     .font(.callout.monospacedDigit())
             }
             .padding(.horizontal, 20)
-            .frame(height: 54)
+            .frame(height: GuideMetrics.scaled(54))
 
             if let error = model.errorMessage {
                 ErrorBanner(message: error)
@@ -205,7 +237,7 @@ struct MacGuideView: View {
                             Button {
                                 model.play(row)
                             } label: {
-                                MacChannelRow(
+                                GuideChannelRow(
                                     row: row,
                                     channelWidth: channelWidth,
                                     rowHeight: rowHeight,
@@ -213,7 +245,11 @@ struct MacGuideView: View {
                                     isPlaying: model.selection?.id == row.id
                                 )
                             }
-                            .buttonStyle(MacGuideButtonStyle(isSelected: model.selection?.id == row.id))
+                            .buttonStyle(GuideButtonStyle(
+                                isSelected: model.selection?.id == row.id,
+                                isFocused: focusedChannelID == row.id
+                            ))
+                            .focused($focusedChannelID, equals: row.id)
                             .accessibilityLabel("Watch \(row.channel.name)")
                             .accessibilityValue(
                                 model.selection?.id == row.id ? "Now playing" : "Not playing"
@@ -249,23 +285,23 @@ struct MacGuideView: View {
                         )
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(Theme.secondaryText)
-                        .offset(x: timeline.size.width * Double(index) / 6, y: 9)
+                        .offset(x: timeline.size.width * Double(index) / 6, y: GuideMetrics.scaled(9))
                     }
                     let position = nowPosition(at: date)
                     if (0..<1).contains(position) {
                         Circle()
-                            .fill(MacGuideTheme.program)
+                            .fill(GuideTheme.program)
                             .frame(width: 6, height: 6)
-                            .offset(x: timeline.size.width * position - 3, y: 29)
+                            .offset(x: timeline.size.width * position - 3, y: GuideMetrics.scaled(29))
                     }
                 }
             }
         }
-        .frame(height: 34)
+        .frame(height: GuideMetrics.scaled(34))
     }
 }
 
-private struct MacChannelRow: View {
+private struct GuideChannelRow: View {
     let row: ChannelRow
     let channelWidth: CGFloat
     let rowHeight: CGFloat
@@ -275,10 +311,10 @@ private struct MacChannelRow: View {
     var body: some View {
         HStack(spacing: 0) {
             HStack(spacing: 10) {
-                ChannelLogo(channel: row.channel, size: 44)
+                ChannelLogo(channel: row.channel, size: GuideMetrics.scaled(44))
                 VStack(alignment: .leading, spacing: 5) {
                     Text(row.channel.name)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: GuideMetrics.fontSize(12), weight: .semibold))
                         .lineLimit(2)
                     if isPlaying {
                         Label("Playing", systemImage: "speaker.wave.2.fill")
@@ -302,7 +338,7 @@ private struct MacChannelRow: View {
                     }
                     ForEach(Array(row.programs.enumerated()), id: \.offset) { _, program in
                         let range = program.guideRange
-                        MacEPGCell(program: program)
+                        GuideProgramCell(program: program)
                             .frame(
                                 width: max(timeline.size.width * (range.upperBound - range.lowerBound) - 4, 0),
                                 height: rowHeight - 12
@@ -311,7 +347,7 @@ private struct MacChannelRow: View {
                             .offset(x: timeline.size.width * range.lowerBound + 2)
                     }
                     if (0..<1).contains(nowPosition) {
-                        MacGuideTheme.program.opacity(0.8)
+                        GuideTheme.program.opacity(0.8)
                             .frame(width: 1)
                             .offset(x: timeline.size.width * nowPosition)
                     }
@@ -324,51 +360,52 @@ private struct MacChannelRow: View {
     }
 }
 
-private struct MacEPGCell: View {
+private struct GuideProgramCell: View {
     let program: Program
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(program.title)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: GuideMetrics.fontSize(12), weight: .semibold))
                 .lineLimit(1)
             Text(program.timeRange)
-                .font(.system(size: 10))
+                .font(.system(size: GuideMetrics.fontSize(10)))
                 .foregroundStyle(Theme.secondaryText)
                 .lineLimit(1)
         }
         .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(program.isCurrent ? MacGuideTheme.program.opacity(0.32) : .white.opacity(0.035))
+        .background(program.isCurrent ? GuideTheme.program.opacity(0.32) : .white.opacity(0.035))
         .clipShape(RoundedRectangle(cornerRadius: 7))
         .overlay {
             RoundedRectangle(cornerRadius: 7)
                 .stroke(
-                    program.isCurrent ? MacGuideTheme.program.opacity(0.8) : .white.opacity(0.1),
+                    program.isCurrent ? GuideTheme.program.opacity(0.8) : .white.opacity(0.1),
                     lineWidth: 1
                 )
         }
     }
 }
 
-struct MacGuideButtonStyle: ButtonStyle {
+struct GuideButtonStyle: ButtonStyle {
     var isSelected = false
+    var isFocused = false
 
     func makeBody(configuration: Configuration) -> some View {
-        Appearance(configuration: configuration, isSelected: isSelected)
+        Appearance(configuration: configuration, isSelected: isSelected, isFocused: isFocused)
     }
 
     private struct Appearance: View {
         let configuration: ButtonStyleConfiguration
         let isSelected: Bool
-        @Environment(\.isFocused) private var isFocused
+        let isFocused: Bool
         @State private var isHovered = false
 
         var body: some View {
             configuration.label
                 .foregroundStyle(.white)
                 .background(
-                    isSelected ? MacGuideTheme.selection : MacGuideTheme.surface,
+                    isSelected ? GuideTheme.selection : GuideTheme.surface,
                     in: RoundedRectangle(cornerRadius: 8)
                 )
                 .overlay {
@@ -376,13 +413,16 @@ struct MacGuideButtonStyle: ButtonStyle {
                         .stroke(
                             isFocused ? Color.white.opacity(0.8)
                                 : Color.white.opacity(isHovered ? 0.3 : 0),
-                            lineWidth: isFocused ? 2 : 1
+                            lineWidth: isFocused ? GuideMetrics.scaled(2) : 1
                         )
                         .allowsHitTesting(false)
                 }
                 .brightness(configuration.isPressed ? 0.08 : (isHovered ? 0.035 : 0))
+                .animation(.easeOut(duration: 0.12), value: isFocused)
+                #if os(macOS)
                 .onHover { isHovered = $0 }
                 .animation(.easeOut(duration: 0.12), value: isHovered)
+                #endif
         }
     }
 }
@@ -466,296 +506,6 @@ private struct PhoneChannelCard: View {
         .padding(14)
         .glassCard()
         .contentShape(Rectangle())
-    }
-}
-#endif
-
-#if os(tvOS)
-private struct TVGuideView: View {
-    @EnvironmentObject private var model: AppModel
-    @State private var selectedCategoryID: String?
-    @FocusState private var focusedItem: FocusedItem?
-
-    private let categoryWidth: CGFloat = 270
-    private let channelWidth: CGFloat = 330
-    private let rowHeight: CGFloat = 94
-
-    private enum FocusedItem: Hashable {
-        case category(String)
-        case channel(String)
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            categorySidebar
-
-            VStack(spacing: 0) {
-                guideHeader
-
-                if let error = model.errorMessage {
-                    ErrorBanner(message: error)
-                        .padding(.horizontal, 24)
-                        .padding(.top, 14)
-                }
-
-                ScrollView {
-                    LazyVStack(spacing: 4) {
-                        ForEach(visibleChannels) { row in
-                            Button {
-                                model.play(row)
-                            } label: {
-                                TVChannelRow(
-                                    row: row,
-                                    channelWidth: channelWidth,
-                                    rowHeight: rowHeight,
-                                    isPlaying: model.selection?.channel.id == row.channel.id
-                                )
-                            }
-                            .buttonStyle(
-                                TVGuideRowButtonStyle(
-                                    isFocused: focusedItem == .channel(row.channel.id)
-                                )
-                            )
-                            .focused($focusedItem, equals: .channel(row.channel.id))
-                        }
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 12)
-                }
-            }
-        }
-        .onChange(of: model.guideCategories) { _, categories in
-            if let selectedCategoryID,
-               !categories.contains(where: { $0.id == selectedCategoryID }) {
-                self.selectedCategoryID = nil
-            }
-        }
-    }
-
-    private var categorySidebar: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("LIVE TV")
-                    .font(.caption.weight(.bold))
-                    .tracking(2.6)
-                    .foregroundStyle(Theme.accent)
-                Text("Categories")
-                    .font(.title2.bold())
-            }
-            .padding(.horizontal, 20)
-
-            ScrollView {
-                LazyVStack(spacing: 9) {
-                    categoryButton(id: nil, name: "All Channels", icon: "rectangle.stack.fill")
-                    ForEach(model.guideCategories) { category in
-                        categoryButton(id: category.id, name: category.name, icon: "tv")
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
-            }
-
-            Text("\(visibleChannels.count) channels")
-                .font(.callout)
-                .foregroundStyle(Theme.secondaryText)
-                .padding(.horizontal, 20)
-        }
-        .padding(.vertical, 22)
-        .frame(width: categoryWidth)
-        .background(Theme.background.opacity(0.96))
-        .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(Color.white.opacity(0.09))
-                .frame(width: 1)
-        }
-    }
-
-    private var guideHeader: some View {
-        HStack(spacing: 0) {
-            Text(selectedCategoryName)
-                .font(.headline)
-                .lineLimit(1)
-                .padding(.horizontal, 22)
-                .frame(width: channelWidth, alignment: .leading)
-
-            HStack(spacing: 0) {
-                ForEach(timeMarkers, id: \.self) { marker in
-                    Text(marker)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(Theme.secondaryText)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-        }
-        .frame(height: 56)
-        .background(Theme.background.opacity(0.9))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.white.opacity(0.1))
-                .frame(height: 1)
-        }
-    }
-
-    private var visibleChannels: [ChannelRow] {
-        model.filteredChannels(in: selectedCategoryID)
-    }
-
-    private var selectedCategoryName: String {
-        guard let selectedCategoryID else { return "All Channels" }
-        return model.guideCategories.first(where: { $0.id == selectedCategoryID })?.name
-            ?? "Channels"
-    }
-
-    private var timeMarkers: [String] {
-        let calendar = Calendar.current
-        let now = Date()
-        let start = calendar.date(
-            bySettingHour: calendar.component(.hour, from: now),
-            minute: 0,
-            second: 0,
-            of: now
-        ) ?? now
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        return (0..<4).compactMap {
-            calendar.date(byAdding: .hour, value: $0, to: start)
-        }.map(formatter.string)
-    }
-
-    private func categoryButton(id: String?, name: String, icon: String) -> some View {
-        let focusID = id ?? "all"
-        return Button {
-            selectedCategoryID = id
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .frame(width: 24)
-                Text(name)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if selectedCategoryID == id {
-                    Image(systemName: "checkmark")
-                        .font(.caption.bold())
-                }
-            }
-            .font(.callout.weight(.semibold))
-            .padding(.horizontal, 15)
-            .frame(height: 56)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(
-            TVCategoryButtonStyle(
-                isSelected: selectedCategoryID == id,
-                isFocused: focusedItem == .category(focusID)
-            )
-        )
-        .focused($focusedItem, equals: .category(focusID))
-    }
-}
-
-private struct TVChannelRow: View {
-    let row: ChannelRow
-    let channelWidth: CGFloat
-    let rowHeight: CGFloat
-    let isPlaying: Bool
-
-    var body: some View {
-        HStack(spacing: 0) {
-            HStack(spacing: 14) {
-                ChannelLogo(channel: row.channel, size: 58)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(row.channel.name)
-                        .font(.headline)
-                        .lineLimit(1)
-                    HStack(spacing: 8) {
-                        if isPlaying {
-                            Image(systemName: "speaker.wave.2.fill")
-                                .foregroundStyle(Theme.accent)
-                        }
-                        Text(row.currentProgram?.title ?? "No guide information")
-                            .font(.caption)
-                            .foregroundStyle(Theme.secondaryText)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 16)
-            .frame(width: channelWidth, height: rowHeight)
-
-            GeometryReader { timeline in
-                ZStack(alignment: .leading) {
-                    Color.white.opacity(0.025)
-                    ForEach(Array(row.programs.enumerated()), id: \.offset) { _, program in
-                        TVProgramCell(program: program)
-                            .frame(
-                                width: max(timeline.size.width * program.widthPercent / 100 - 5, 100),
-                                height: rowHeight - 12
-                            )
-                            .offset(x: timeline.size.width * program.leftPercent / 100 + 3)
-                    }
-                }
-                .clipped()
-            }
-            .frame(height: rowHeight)
-        }
-        .background(isPlaying ? Theme.accent.opacity(0.12) : Theme.surface.opacity(0.82))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(isPlaying ? Theme.accent.opacity(0.65) : Color.white.opacity(0.06))
-        }
-    }
-}
-
-private struct TVProgramCell: View {
-    let program: Program
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(program.title)
-                .font(.callout.weight(.semibold))
-                .lineLimit(1)
-            Text("\(program.start) – \(program.end)")
-                .font(.caption2)
-                .foregroundStyle(program.isCurrent ? .white.opacity(0.78) : Theme.secondaryText)
-        }
-        .padding(.horizontal, 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(program.isCurrent ? Theme.accent.opacity(0.8) : Theme.elevated)
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-    }
-}
-
-private struct TVGuideRowButtonStyle: ButtonStyle {
-    let isFocused: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(isFocused ? 1.018 : (configuration.isPressed ? 0.99 : 1))
-            .shadow(color: isFocused ? Theme.accent.opacity(0.5) : .clear, radius: 12)
-            .animation(.easeOut(duration: 0.14), value: isFocused)
-            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
-    }
-}
-
-private struct TVCategoryButtonStyle: ButtonStyle {
-    let isSelected: Bool
-    let isFocused: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(.white)
-            .background(
-                isSelected ? Theme.accent.opacity(0.72) : Theme.surface.opacity(0.72),
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(isFocused ? Color.white.opacity(0.9) : .clear, lineWidth: 3)
-            }
-            .scaleEffect(isFocused ? 1.045 : (configuration.isPressed ? 0.98 : 1))
-            .animation(.easeOut(duration: 0.14), value: isFocused)
     }
 }
 #endif

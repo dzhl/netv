@@ -2,30 +2,41 @@
 
 Native SwiftUI clients for iPhone, iPad, Apple TV, and Mac. All apps share the same authenticated neTV guide, channel artwork, program metadata, and AVPlayer playback while adapting navigation and layout to each platform.
 
-On Apple TV, Live TV uses a category sidebar and compact channel rows. Each row
-keeps the channel logo and current program beside a three-hour schedule timeline,
-with remote focus moving directly between categories and channels.
+Mac and Apple TV share the same live layout and slate/purple color scheme, with
+larger text and controls on TV. A narrow Live TV / Settings navigation rail sits
+beside a full-height category column with its own scrollbar. Categories stay
+visible while the adjacent channel list scrolls, and a single click switches
+categories locally without waiting for a network request. Category names appear
+only once: names differing only in case or surrounding whitespace are grouped,
+and selecting a group includes channels from all of its underlying category IDs.
+The first occurrence determines the displayed name and order.
 
-On Mac, a narrow Live TV / Settings navigation rail sits beside a full-height
-clickable category column with its own scrollbar. Categories stay visible while
-the adjacent channel list scrolls, and a single click switches categories locally
-without waiting for a network request. The slate-colored guide uses compact logo-led channel rows,
-purple current-program highlights, half-hour time markers, and a now indicator.
-A small player preview sits beside program details above the guide. Selecting a
-category only filters the list; selecting a channel tunes playback. Search covers
-channel names and all loaded program titles, and channel counts follow the search.
-Full-screen playback keeps the same player alive and restores the selected
-category and scroll position when you return.
+The guide uses compact logo-led channel rows, purple current-program highlights,
+half-hour time markers, and a now indicator. A small video preview occupies the
+top-right corner, with the channel, program title, times, and description beside
+it across the top; the channel guide is below. Selecting a category only filters
+the list; selecting a channel tunes playback. Search covers channel names and all
+loaded program titles, and channel counts follow the search.
 
-The Mac video surface has no native play/pause toolbar or full-width title
-overlay. Volume lives in a small bottom-left panel with a translucent background
-limited to that panel; the rest of the picture stays unobscured. The volume level
-also carries across channel changes and adaptive quality switches.
+On TV, the navigation rail also has Search and Refresh controls. Full Screen
+hides the rail and category/guide panels and lets the player fill the display,
+including the usual tvOS safe-area margins. Video retains its original aspect
+ratio. Back/Menu returns to the guide without restarting playback, preserving
+the selected category and scroll position. The remote's Play/Pause button still
+works without showing a transport overlay.
+
+Neither Mac nor TV displays a native play/pause toolbar or full-width title
+overlay. Volume lives in a small bottom-left panel whose translucent background
+is limited to that panel: a slider on Mac and remote-focusable minus/plus buttons
+on TV. These adjust the app's audio level; the Siri Remote's hardware volume keys
+still control the connected TV/receiver. App volume carries across channel
+changes and adaptive quality switches. Full-screen controls remain inset from
+the screen edges while the video itself uses the full display.
 
 Category names and ordering follow the web settings. Use the updated neTV server
 for category metadata and device-local program times; older servers remain
 playable through All Channels. The Apple client loads every guide page rather
-than stopping at the first 500 channels. Use the toolbar refresh button to reload
+than stopping at the first 500 channels. Use the refresh button to reload
 channels and the three-hour schedule.
 
 ## Open and run

@@ -51,6 +51,21 @@ struct GuideDataChecks {
         precondition(categorized.categories.map(\.id) == ["1", "2"])
         precondition(categorized.rows[0].channel.categoryIDs == ["1", "2"])
         precondition(categorized.windowStartTimestamp == 1789344000)
-        print("Guide checks passed: timestamps, clipping, categories and legacy responses")
+        let duplicates = try decoder.decode([GuideCategory].self, from: Data("""
+            [
+              {"category_id":"sport-1","category_name":"Sports"},
+              {"category_id":"news-1","category_name":"News"},
+              {"category_id":"sport-2","category_name":" sports "},
+              {"category_id":"sport-1","category_name":"Sports"},
+              {"category_id":"news-2","category_name":"NEWS"}
+            ]
+            """.utf8))
+        let groups = GuideCategoryGroup.distinct(duplicates)
+        precondition(groups.map(\.name) == ["Sports", "News"], "Preserve category order without duplicate rows")
+        precondition(groups[0].categoryIDs == ["sport-1", "sport-2"])
+        precondition(groups[1].categoryIDs == ["news-1", "news-2"])
+        precondition(Set(groups.map(\.id)).count == groups.count)
+        precondition(GuideCategoryGroup.distinct([]).isEmpty)
+        print("Guide checks passed: timestamps, clipping, distinct categories and legacy responses")
     }
 }

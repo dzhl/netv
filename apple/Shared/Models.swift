@@ -36,6 +36,31 @@ struct GuideCategory: Decodable, Identifiable, Hashable {
     }
 }
 
+struct GuideCategoryGroup: Identifiable, Hashable {
+    let id: String
+    let name: String
+    var categoryIDs: Set<String>
+
+    static func distinct(_ categories: [GuideCategory]) -> [GuideCategoryGroup] {
+        var groups: [GuideCategoryGroup] = []
+        var indexByName: [String: Int] = [:]
+        for category in categories {
+            let trimmed = category.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = trimmed.isEmpty ? "Uncategorized" : trimmed
+            let key = name.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+            if let index = indexByName[key] {
+                groups[index].categoryIDs.insert(category.id)
+            } else {
+                indexByName[key] = groups.count
+                groups.append(GuideCategoryGroup(
+                    id: "category:\(key)", name: name, categoryIDs: [category.id]
+                ))
+            }
+        }
+        return groups
+    }
+}
+
 struct ChannelRow: Decodable, Identifiable, Hashable {
     let channel: Channel
     let programs: [Program]

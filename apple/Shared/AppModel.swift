@@ -16,8 +16,11 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var selection: PlayerSelection?
     @Published var isPlayerExpanded = false
-    #if os(macOS)
+    #if os(macOS) || os(tvOS)
     @Published var playbackVolume: Double = 1
+    #endif
+    #if os(tvOS)
+    @Published var playPauseRequest: UUID?
     #endif
 
     // Keep the downgrade across player recreation and channel changes for this app run.
@@ -51,7 +54,13 @@ final class AppModel: ObservableObject {
 
     func filteredChannels(in categoryID: String?) -> [ChannelRow] {
         guard let categoryID else { return filteredChannels }
-        return filteredChannels.filter { $0.channel.categoryIDs.contains(categoryID) }
+        let categoryIDs = guideCategoryGroups.first(where: { $0.id == categoryID })?.categoryIDs
+            ?? [categoryID]
+        return filteredChannels.filter { !categoryIDs.isDisjoint(with: $0.channel.categoryIDs) }
+    }
+
+    var guideCategoryGroups: [GuideCategoryGroup] {
+        GuideCategoryGroup.distinct(guideCategories)
     }
 
     func signIn(username: String, password: String) async {
