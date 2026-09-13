@@ -17,6 +17,8 @@
   opacity: 1;
   pointer-events: auto;
 }
+#info-overlay { max-width: calc(100% - 6rem); }
+#player-container:has(#error:not(.hidden)) #quality-badge { display: none; }
 #player-container:has(#loading:not(.hidden)) #info-overlay {
   opacity: 1;
   pointer-events: auto;
@@ -67,6 +69,7 @@
   <!-- Video container with overlay controls - full frame -->
   <div class="h-full bg-black overflow-hidden relative" id="player-container">
     <video id="video" class="w-full h-full bg-black" crossorigin="anonymous"></video>
+    <span id="quality-badge" class="hidden absolute top-3 right-3 z-30 rounded-full bg-black/60 px-2 py-1 text-xs font-semibold text-white pointer-events-none" role="status" aria-live="polite" aria-atomic="true"></span>
 
     <!-- Title overlay -->
     <div id="info-overlay" class="player-controls absolute top-0 left-0 z-30 bg-black/50 rounded-br-lg pb-2 pt-2 px-3">
@@ -197,5 +200,7 @@ window.PLAYER_CONFIG = {
   sourceId: {{ source_id | tojson }}
 };
 </script>
+<script src="/static/js/player-quality.js"></script>
+<script src="/static/js/live-playback.js"></script>
 <script src="/static/js/player.js"></script>
 {% endblock %}

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import json
 
@@ -81,6 +81,70 @@ def auth_client(tmp_path: Path, mock_deps):
         client.cookies.set("token", token)
 
         yield client
+
+
+def test_web_player_includes_resolution_badge(auth_client):
+    from main import PlayerInfo
+
+    info = PlayerInfo(url="https://example.test/live.m3u8", channel_name="Test channel")
+    with patch("main._get_live_player_info", return_value=info):
+        response = auth_client.get("/play/live/test")
+    assert response.status_code == 200
+    assert 'id="quality-badge"' in response.text
+    assert response.text.index('id="player-container"') < response.text.index('id="quality-badge"')
+    assert response.text.index("/static/js/player-quality.js") < response.text.index(
+        "/static/js/player.js"
+    )
+    assert response.text.index("/static/js/live-playback.js") < response.text.index(
+        "/static/js/player.js"
+    )
+    script = auth_client.get("/static/js/player-quality.js")
+    assert script.status_code == 200
+    assert "videoWidth" in script.text
+
+
+def test_adaptive_start_uses_shared_backend(auth_client):
+    result = {
+        "session_id": "shared",
+        "playlist": "/transcode/shared/low.m3u8",
+        "master_playlist": "/transcode/shared/master.m3u8",
+    }
+    with patch("ffmpeg_session.start_transcode", new=AsyncMock(return_value=result)) as start:
+        response = auth_client.get(
+            "/transcode/start",
+            params={"url": "https://provider.example/live.m3u8", "fast_start": "true"},
+        )
+    assert response.status_code == 200
+    assert response.json() == result
+    assert start.call_args.kwargs["fast_start"] is True
+
+
+def test_disconnected_adaptive_start_is_cleaned_up(auth_client):
+    with (
+        patch("ffmpeg_session.start_transcode", new=AsyncMock(return_value={"session_id": "new"})),
+        patch("starlette.requests.Request.is_disconnected", new=AsyncMock(return_value=True)),
+        patch("ffmpeg_session.stop_session") as stop,
+    ):
+        response = auth_client.get(
+            "/transcode/start",
+            params={"url": "https://provider.example/live.m3u8", "fast_start": "true"},
+        )
+    assert response.status_code == 499
+    stop.assert_called_once_with("new", force=True)
+
+
+@pytest.mark.parametrize("owner,status", [("testuser", 200), ("other", 404)])
+def test_live_page_close_force_stop_checks_owner(auth_client, owner, status):
+    with (
+        patch("ffmpeg_session.get_session", return_value={"username": owner}),
+        patch("ffmpeg_session.stop_session") as stop,
+    ):
+        response = auth_client.post("/transcode/live/stop?force=true")
+    assert response.status_code == status
+    if status == 200:
+        stop.assert_called_once_with("live", force=True)
+    else:
+        stop.assert_not_called()
 
 
 class TestSetup:
@@ -673,6 +737,29 @@ class TestTranscodeRoutes:
         with patch("main.ffmpeg_session.get_session_progress", return_value=None):
             resp = auth_client.get("/transcode/progress/invalid-session")
             assert resp.status_code == 404
+
+    @pytest.mark.parametrize("filename", ["master.m3u8", "low.m3u8", "high.m3u8"])
+    def test_adaptive_playlists_share_dates_but_master_is_not_rewritten(
+        self, auth_client, tmp_path, filename
+    ):
+        content = "#EXTM3U\n"
+        (tmp_path / filename).write_text(content)
+        session = {
+            "dir": str(tmp_path), "fast_start": True, "origin_pts": 10, "origin_time": 0,
+        }
+        with (
+            patch("ffmpeg_session.get_session", return_value=session),
+            patch("main.dated_playlist", return_value=content + "#dated\n") as dates,
+        ):
+            response = auth_client.get(f"/transcode/shared/{filename}")
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == "*"
+        if filename == "master.m3u8":
+            dates.assert_not_called()
+            assert response.text == content
+        else:
+            dates.assert_called_once_with(str(tmp_path), content, 10, 0)
+            assert "#dated" in response.text
 
 
 class TestSubtitleRoutes:

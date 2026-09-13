@@ -158,12 +158,6 @@ def get_settings() -> dict[str, Any]:
     return _load_settings()
 
 
-def get_ffmpeg_env() -> dict[str, str] | None:
-    """Get environment for ffmpeg subprocess. Returns None (ffmpeg has libtorch via rpath)."""
-    # ffmpeg is built with -Wl,-rpath pointing to libtorch, so no LD_LIBRARY_PATH needed
-    return None
-
-
 def _find_sr_engine(model_name: str, source_height: int) -> tuple[str, int, int, int] | None:
     """Find the best matching SR engine file for the given model and resolution.
 
@@ -889,6 +883,56 @@ def probe_media(
 # ===========================================================================
 
 
+def http_reconnect_args(url: str, *, max_delay: int = 30) -> list[str]:
+    """HTTP reconnect options must not be passed to local or other protocol inputs."""
+    if not url.startswith(("http://", "https://")):
+        return []
+    return [
+        "-reconnect",
+        "1",
+        "-reconnect_streamed",
+        "1",
+        "-reconnect_on_network_error",
+        "1",
+        "-reconnect_on_http_error",
+        "4xx,5xx",
+        "-reconnect_delay_max",
+        str(max_delay),
+    ]
+
+
+def live_video_bitrates(resolution: str) -> tuple[int, int]:
+    """Target and maximum video bitrate shared by live renditions."""
+    return {
+        "480p": (2_000_000, 3_000_000),
+        "720p": (4_000_000, 6_000_000),
+        "1080p": (6_000_000, 8_000_000),
+        "1440p": (10_000_000, 14_000_000),
+        "4k": (16_000_000, 20_000_000),
+    }.get(resolution, (4_000_000, 6_000_000))
+
+
+def limit_live_video_bitrate(cmd: list[str], resolution: str) -> None:
+    """Replace quality-only rate control; safe to apply to an already bounded command."""
+    target, maximum = live_video_bitrates(resolution)
+    encoder = cmd[cmd.index("-c:v") + 1]
+    for flag in (
+        "-rc", "-rc_mode", "-qp", "-qp_i", "-qp_p", "-global_quality", "-crf",
+        "-b:v", "-maxrate", "-bufsize",
+    ):
+        if flag in cmd:
+            index = cmd.index(flag)
+            del cmd[index : index + 2]
+    rate_mode = {
+        "h264_nvenc": ["-rc", "vbr"],
+        "h264_amf": ["-rc", "vbr_peak"],
+        "h264_vaapi": ["-rc_mode", "VBR"],
+    }.get(encoder, [])
+    cmd[-1:-1] = rate_mode + [
+        "-b:v", str(target), "-maxrate", str(maximum), "-bufsize", str(maximum),
+    ]
+
+
 def _build_video_args(
     *,
     copy_video: bool,
@@ -1279,18 +1323,9 @@ def build_hls_ffmpeg_cmd(
             "+discardcorrupt+genpts",
             "-err_detect",
             "ignore_err",
-            "-reconnect",
-            "1",
-            "-reconnect_streamed",
-            "1",
-            "-reconnect_on_network_error",
-            "1",
-            "-reconnect_on_http_error",
-            "4xx,5xx",
-            "-reconnect_delay_max",
-            "30",
         ]
     )
+    cmd.extend(http_reconnect_args(input_url))
     if user_agent:
         cmd.extend(["-user_agent", user_agent])
     # Use HLS demuxer options if probe detected HLS format
@@ -1347,4 +1382,6 @@ def build_hls_ffmpeg_cmd(
         cmd.extend(["-hls_flags", "delete_segments"])
 
     cmd.append(f"{output_dir}/stream.m3u8")
+    if sr_applied and not is_vod:
+        limit_live_video_bitrate(cmd, max_resolution)
     return cmd

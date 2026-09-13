@@ -1,11 +1,14 @@
 """Tests for ffmpeg session management."""
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import asyncio
 import json
 import pathlib
 import tempfile
 import time
+
+import pytest
 
 from ffmpeg_session import (
     _HEARTBEAT_TIMEOUT_SEC,
@@ -14,9 +17,11 @@ from ffmpeg_session import (
     _DeadProcess,
     _is_process_alive,
     _kill_process,
+    _launch_ffmpeg,
     _regenerate_playlist,
     _transcode_lock,
     _transcode_sessions,
+    _update_session_process,
     _url_to_session,
     cleanup_and_recover_sessions,
     cleanup_expired_sessions,
@@ -81,6 +86,46 @@ class TestIsProcessAlive:
     def test_dead_process(self):
         proc = FakeProcess(alive=False)
         assert _is_process_alive(proc) is False
+
+    def test_object_without_process_state_is_dead(self):
+        assert _is_process_alive(object()) is False
+
+
+@pytest.mark.asyncio
+async def test_shared_ffmpeg_launcher():
+    process = FakeProcess()
+    cmd = ["ffmpeg", "-i", "https://provider/live.ts", "/tmp/stream.m3u8"]
+    with patch(
+        "ffmpeg_session.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=process),
+    ) as launch:
+        assert await _launch_ffmpeg(cmd) is process
+    launch.assert_awaited_once_with(
+        *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+@pytest.mark.parametrize("seek_time", [None, 0, 30])
+def test_shared_session_process_update(seek_time):
+    session = {"process": FakeProcess(), "seek_offset": 15}
+    process = FakeProcess()
+    with (
+        patch.dict(_transcode_sessions, {"resume": session}, clear=True),
+        patch.dict(_url_to_session, {}, clear=True),
+    ):
+        assert _update_session_process(
+            "resume", process, url="https://provider/movie", seek_time=seek_time
+        )
+        assert session["process"] is process
+        assert session["seek_offset"] == (15 if seek_time is None else seek_time)
+        assert _url_to_session == {"https://provider/movie": "resume"}
+        assert not _update_session_process(
+            "missing", process, url="https://provider/missing", seek_time=0
+        )
+        assert "https://provider/missing" not in _url_to_session
 
 
 class TestKillProcess:

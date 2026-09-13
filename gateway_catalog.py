@@ -92,9 +92,6 @@ class StreamIdRegistry:
     def _save(self) -> None:
         atomic_write_json(self.path, {"ids": dict(sorted(self._ids.items()))})
 
-    def get_or_create(self, key: str) -> int:
-        return self.get_or_create_many([key])[key]
-
     def get_or_create_many(self, keys: list[str]) -> dict[str, int]:
         with self._lock:
             self._load()

@@ -118,11 +118,7 @@ class TestParseEpgUrls:
         assert result[0] == ("http://valid.com", 60, "src")
 
 
-class TestFetchLocks:
-    def test_get_fetch_lock(self, m3u_module):
-        lock = m3u_module.get_fetch_lock("live")
-        assert lock is not None
-
+class TestRefreshState:
     def test_get_refresh_in_progress(self, m3u_module):
         rip = m3u_module.get_refresh_in_progress()
         assert isinstance(rip, set)
@@ -173,6 +169,120 @@ class TestFetchSourceLiveData:
             m3u_module.fetch_source_live_data(source, persist_epg_url=False)
 
         update_epg_url.assert_not_called()
+
+
+class TestAggregateSourceData:
+    @pytest.mark.parametrize("epg_enabled", [True, False])
+    def test_live_sources_share_normalization_without_persisting_epg(
+        self, m3u_module, epg_enabled
+    ):
+        sources = [
+            cache.Source(
+                id=kind,
+                name=kind,
+                type=kind,
+                url=f"https://{kind}.example",
+                epg_enabled=epg_enabled,
+                epg_timeout=90 + index,
+            )
+            for index, kind in enumerate(("xtream", "m3u", "epg"))
+        ]
+        client = MagicMock()
+        client.get_live_categories.return_value = [{"category_id": "news"}]
+        client.get_live_streams.return_value = [
+            {"stream_id": 1, "category_id": "news"},
+            {"stream_id": 2, "category_ids": ["news", "sport"]},
+        ]
+        client.epg_url = "https://xtream.example/guide.xml"
+        m3u_cats = [{"category_id": "m3u_news", "source_id": "m3u"}]
+        m3u_streams = [{"stream_id": "m3u_1", "direct_url": "https://m3u.example/live"}]
+        with (
+            patch.object(m3u_module, "get_sources", return_value=sources),
+            patch.object(m3u_module, "_make_client", return_value=client),
+            patch.object(
+                m3u_module,
+                "fetch_m3u",
+                return_value=(m3u_cats, m3u_streams, "https://m3u.example/guide.xml"),
+            ),
+            patch.object(m3u_module, "update_source_epg_url") as persist,
+        ):
+            cats, streams, epg_urls = m3u_module._fetch_all_live_data()
+
+        assert cats == [{"category_id": "xtream_news", "source_id": "xtream"}, *m3u_cats]
+        assert [s["stream_id"] for s in streams] == [1, 2, "m3u_1"]
+        assert streams[0]["category_ids"] == ["xtream_news"]
+        assert streams[1]["category_ids"] == ["xtream_news", "xtream_sport"]
+        assert all(s["source_id"] == "xtream" for s in streams[:2])
+        assert all(s["source_url"] == sources[0].url for s in streams[:2])
+        assert streams[-1] == m3u_streams[0]
+        assert epg_urls == (
+            [
+                ("https://xtream.example/guide.xml", 90, "xtream"),
+                ("https://m3u.example/guide.xml", 91, "m3u"),
+                ("https://epg.example", 92, "epg"),
+            ]
+            if epg_enabled
+            else []
+        )
+        persist.assert_not_called()
+
+    def test_live_source_failure_does_not_drop_other_sources(self, m3u_module, caplog):
+        broken = cache.Source("broken", "Offline source", "xtream", "https://offline.example")
+        working = cache.Source("working", "EPG source", "epg", "https://epg.example")
+        with (
+            patch.object(m3u_module, "get_sources", return_value=[broken, working]),
+            patch.object(m3u_module, "_make_client", side_effect=OSError("offline")),
+        ):
+            assert m3u_module._fetch_all_live_data() == (
+                [], [], [(working.url, working.epg_timeout, working.id)]
+            )
+        assert "Error loading source Offline source" in caplog.text
+
+    def test_vod_sources_use_shared_loader_and_keep_order(self, m3u_module):
+        sources = [
+            cache.Source("a", "First", "xtream", "https://a.example"),
+            cache.Source("playlist", "Playlist", "m3u", "https://playlist.example"),
+            cache.Source("b", "Second", "xtream", "https://b.example"),
+        ]
+        clients = {source.id: MagicMock() for source in sources if source.type == "xtream"}
+        for client in clients.values():
+            client.get_vod_categories.return_value = [{"category_id": "films"}]
+            client.get_vod_streams.return_value = [{"stream_id": 1}]
+        with (
+            patch.object(m3u_module, "get_sources", return_value=sources),
+            patch.object(m3u_module, "_make_client", side_effect=lambda s: clients[s.id]),
+            patch.object(
+                m3u_module, "fetch_source_vod_data", wraps=m3u_module.fetch_source_vod_data
+            ) as fetch,
+        ):
+            cats, streams = m3u_module._fetch_vod_data()
+
+        assert [call.args[0] for call in fetch.call_args_list] == [sources[0], sources[2]]
+        assert cats == [
+            {"category_id": "films", "source_id": "a"},
+            {"category_id": "films", "source_id": "b"},
+        ]
+        assert streams == [
+            {"stream_id": 1, "source_id": "a"},
+            {"stream_id": 1, "source_id": "b"},
+        ]
+
+    def test_vod_source_failure_does_not_drop_other_sources(self, m3u_module, caplog):
+        sources = [
+            cache.Source("broken", "Offline", "xtream", "https://offline.example"),
+            cache.Source("working", "Online", "xtream", "https://online.example"),
+        ]
+        client = MagicMock()
+        client.get_vod_categories.return_value = [{"category_id": "films"}]
+        client.get_vod_streams.return_value = [{"stream_id": 1}]
+        with (
+            patch.object(m3u_module, "get_sources", return_value=sources),
+            patch.object(m3u_module, "_make_client", side_effect=[OSError("offline"), client]),
+        ):
+            cats, streams = m3u_module._fetch_vod_data()
+        assert cats == [{"category_id": "films", "source_id": "working"}]
+        assert streams == [{"stream_id": 1, "source_id": "working"}]
+        assert "Failed to fetch VOD from source broken" in caplog.text
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,6 +24,7 @@ from fast_start import (
     aligned,
     encoder_command,
     ingest_command,
+    master_playlist,
     playlist_duration,
     ready_bitrate,
     segment_pts,
@@ -33,7 +35,6 @@ from ffmpeg_command import (
     MediaInfo,
     SubtitleStream,
     build_hls_ffmpeg_cmd,
-    get_ffmpeg_env,
     get_hls_segment_duration,
     get_settings,
     get_transcode_dir,
@@ -105,13 +106,7 @@ def get_live_cache_timeout() -> int:
 
 def _is_process_alive(proc: Any) -> bool:
     """Check if process is still running."""
-    if proc is None:
-        return False
-    if isinstance(proc, _DeadProcess):
-        return False
-    if hasattr(proc, "returncode"):
-        return proc.returncode is None
-    return False
+    return getattr(proc, "returncode", 0) is None
 
 
 def is_session_valid(session: dict[str, Any]) -> bool:
@@ -430,6 +425,15 @@ def cleanup_and_recover_sessions() -> None:
 # ===========================================================================
 
 
+async def _launch_ffmpeg(cmd: list[str]) -> asyncio.subprocess.Process:
+    return await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
 async def _monitor_ffmpeg_stderr(
     process: asyncio.subprocess.Process,
     session_id: str,
@@ -618,13 +622,23 @@ def _get_session_snapshot(session_id: str) -> _SessionSnapshot | None:
         )
 
 
-def _update_session_process(session_id: str, process: Any) -> bool:
+def _update_session_process(
+    session_id: str,
+    process: Any,
+    *,
+    seek_time: float | None = None,
+    url: str = "",
+) -> bool:
     """Atomically update session process. Returns False if session gone."""
     with _transcode_lock:
         session = _transcode_sessions.get(session_id)
         if not session:
             return False
         session["process"] = process
+        if seek_time is not None:
+            session["seek_offset"] = seek_time
+        if url:
+            _url_to_session[url] = session_id
         return True
 
 
@@ -648,6 +662,17 @@ def _build_session_response(
 # ===========================================================================
 # Existing Session Handling
 # ===========================================================================
+
+
+def _adaptive_session_response(session_id: str) -> dict[str, Any]:
+    return {
+        "session_id": session_id,
+        "playlist": f"/transcode/{session_id}/low.m3u8",
+        "master_playlist": f"/transcode/{session_id}/master.m3u8",
+        "subtitles": [],
+        "duration": 0,
+        "seek_offset": 0,
+    }
 
 
 def _get_existing_session(url: str) -> tuple[str | None, bool, float]:
@@ -745,13 +770,7 @@ async def _handle_existing_vod_session(
         cmd.extend(["-hls_flags", "append_list"])
     cmd.extend(["-start_number", str(len(segments))])
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=get_ffmpeg_env(),
-    )
+    process = await _launch_ffmpeg(cmd)
     if not _update_session_process(existing_id, process):
         _kill_process(process)
         return None
@@ -909,13 +928,7 @@ async def _do_start_transcode(
         " ".join(redact_url_credentials(arg) for arg in cmd),
     )
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=get_ffmpeg_env(),
-    )
+    process = await _launch_ffmpeg(cmd)
 
     stderr_lines: list[str] = []
     _spawn_background_task(_monitor_ffmpeg_stderr(process, session_id, stderr_lines))
@@ -1015,6 +1028,7 @@ async def start_transcode(
     source_max_streams: int = 0,
     bandwidth_saver: bool = False,
     fast_start: bool = False,
+    is_disconnected: Callable[[], Awaitable[bool]] | None = None,
 ) -> dict[str, Any]:
     """Start or reuse a transcode session."""
     if bandwidth_saver and content_type != "live":
@@ -1043,13 +1057,7 @@ async def start_transcode(
             if existing.get("username") != username:
                 raise HTTPException(404, "Session not found")
             touch_session(existing_id)
-            return {
-                "session_id": existing_id,
-                "playlist": f"/transcode/{existing_id}/low.m3u8",
-                "subtitles": [],
-                "duration": 0,
-                "seek_offset": 0,
-            }
+            return _adaptive_session_response(existing_id)
         log.info("Found valid existing session %s (vod=%s)", existing_id, is_vod)
         result = await _try_reuse_session(existing_id, url, is_vod, content_type)
         if result:
@@ -1066,7 +1074,9 @@ async def start_transcode(
         and content_type == "live"
         and get_settings().get("max_resolution", "1080p") in ("1080p", "1440p", "4k")
     ):
-        return await _start_fast_live(url, username, source_id, deinterlace_fallback)
+        return await _start_fast_live(
+            url, username, source_id, deinterlace_fallback, is_disconnected=is_disconnected
+        )
 
     # Start fresh transcode (with retry for series probe cache staleness)
     try:
@@ -1130,7 +1140,10 @@ def get_session_progress(session_id: str) -> dict[str, Any] | None:
     session = get_session(session_id)
     if not session:
         return None
-    playlist_path = pathlib.Path(session["dir"]) / "stream.m3u8"
+    name = "stream.m3u8"
+    if session.get("fast_start"):
+        name = "high.m3u8" if session.get("high_selected") else "low.m3u8"
+    playlist_path = pathlib.Path(session["dir"]) / name
     if not playlist_path.exists():
         return {"segment_count": 0, "duration": 0.0}
     durations = re.findall(r"#EXTINF:([\d.]+)", playlist_path.read_text())
@@ -1177,24 +1190,6 @@ def _get_seek_session_info(session_id: str) -> _SeekSessionInfo | None:
             series_id=session.get("series_id"),
             episode_id=session.get("episode_id"),
         )
-
-
-def _update_seek_session(
-    session_id: str,
-    url: str,
-    process: Any,
-    seek_time: float,
-) -> bool:
-    """Update session after seek. Returns False if session gone."""
-    with _transcode_lock:
-        session = _transcode_sessions.get(session_id)
-        if not session:
-            return False
-        session["process"] = process
-        session["seek_offset"] = seek_time
-        if url:
-            _url_to_session[url] = session_id
-        return True
 
 
 async def seek_transcode(session_id: str, seek_time: float) -> dict[str, Any]:
@@ -1303,15 +1298,9 @@ async def seek_transcode(session_id: str, seek_time: float) -> dict[str, Any]:
         " ".join(cmd),
     )
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=get_ffmpeg_env(),
-    )
+    process = await _launch_ffmpeg(cmd)
 
-    if not _update_seek_session(session_id, info.url, process, seek_time):
+    if not _update_session_process(session_id, process, url=info.url, seek_time=seek_time):
         _kill_process(process)
         raise HTTPException(404, "Session disappeared during seek")
 
@@ -1397,13 +1386,19 @@ def report_playback_health(
 
 
 async def _start_fast_live(
-    url: str, username: str, source_id: str, deinterlace: bool
+    url: str,
+    username: str,
+    source_id: str,
+    deinterlace: bool,
+    *,
+    is_disconnected: Callable[[], Awaitable[bool]] | None = None,
 ) -> dict[str, Any]:
     """One provider reader, two independent encoders, one session/stream slot."""
     settings = get_settings()
     session_id = str(uuid.uuid4())
     directory = tempfile.mkdtemp(prefix=f"netv_transcode_{session_id}_", dir=get_transcode_dir())
     processes: list[asyncio.subprocess.Process] = []
+    startup_started = time.monotonic()
 
     async def monitor(proc: asyncio.subprocess.Process, role: str) -> None:
         assert proc.stderr is not None
@@ -1426,29 +1421,37 @@ async def _start_fast_live(
             )
 
     async def launch(cmd: list[str], role: str) -> asyncio.subprocess.Process:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-            env=get_ffmpeg_env(),
-        )
+        proc = await _launch_ffmpeg(cmd)
         processes.append(proc)
         _spawn_background_task(monitor(proc, role))
         log.info("Fast-start %s launched for session %s", role, session_id)
         return proc
 
     async def wait_ready(
-        name: str, proc: asyncio.subprocess.Process, minimum_duration: float = 0
+        name: str,
+        proc: asyncio.subprocess.Process,
+        minimum_duration: float = 0,
+        *,
+        minimum_segments: int = 2,
     ) -> None:
         deadline = time.monotonic() + _PLAYLIST_WAIT_TIMEOUT_SEC
         while time.monotonic() < deadline and proc.returncode is None:
+            if is_disconnected and await is_disconnected():
+                log.info("Adaptive startup disconnected for session %s", session_id)
+                raise HTTPException(499, "Playback request disconnected")
             if (
-                ready_bitrate(directory, name)
+                ready_bitrate(directory, name, minimum_segments=minimum_segments)
                 and playlist_duration(directory, name) >= minimum_duration
             ):
                 return
             await asyncio.sleep(_POLL_INTERVAL_SEC)
+        log.error(
+            "Fast-start session %s failed waiting for %s after %.2fs (exit=%s)",
+            session_id,
+            name,
+            time.monotonic() - startup_started,
+            proc.returncode,
+        )
         raise HTTPException(500, "Fast-start stream failed to become ready")
 
     try:
@@ -1472,7 +1475,14 @@ async def _start_fast_live(
                 "seek_offset": 0,
             }
             _url_to_session[url] = session_id
-        await wait_ready("input.m3u8", ingest)
+        # Warm the low encoder on the first complete source segment, not a full
+        # playback reserve. It still has its own buffer gate.
+        await wait_ready("input.m3u8", ingest, minimum_segments=1)
+        log.info(
+            "Fast-start session %s input ready after %.2fs",
+            session_id,
+            time.monotonic() - startup_started,
+        )
         first_input = min(pathlib.Path(directory).glob("input_*.ts"))
         origin_pts = segment_pts(first_input)
         with _transcode_lock:
@@ -1483,6 +1493,21 @@ async def _start_fast_live(
         )
         with _transcode_lock:
             _transcode_sessions[session_id].update(process=low, extra_processes=[ingest])
+        # A remuxed source is released in source-keyframe-sized bursts. A couple
+        # of tiny output segments cannot bridge the next upstream delivery gap.
+        input_text = (pathlib.Path(directory) / "input.m3u8").read_text()
+        input_durations = [float(value) for value in re.findall(r"#EXTINF:([\d.]+)", input_text)]
+        startup_buffer = max(8.0, 2 * max(input_durations, default=4.0))
+        await wait_ready("low.m3u8", low, startup_buffer)
+        log.info(
+            "Fast-start session %s ready at 720p after %.2fs with %.1fs startup reserve",
+            session_id,
+            time.monotonic() - startup_started,
+            startup_buffer,
+        )
+        # Keep high-quality initialization off the GPU until the startup
+        # rendition has built its reserve. Do not wait for high-quality output.
+        high = None
         try:
             high = await launch(
                 encoder_command(
@@ -1501,24 +1526,12 @@ async def _start_fast_live(
                 )
         except OSError:
             log.exception("High-quality encoder unavailable; continuing at 720p")
-        # A remuxed source is released in source-keyframe-sized bursts. A couple
-        # of tiny output segments cannot bridge the next upstream delivery gap.
-        input_text = (pathlib.Path(directory) / "input.m3u8").read_text()
-        input_durations = [float(value) for value in re.findall(r"#EXTINF:([\d.]+)", input_text)]
-        startup_buffer = max(8.0, 2 * max(input_durations, default=4.0))
-        await wait_ready("low.m3u8", low, startup_buffer)
-        log.info(
-            "Fast-start session %s ready at 720p with %.1fs startup reserve",
-            session_id,
-            startup_buffer,
+        (pathlib.Path(directory) / "master.m3u8").write_text(
+            master_playlist(
+                settings.get("max_resolution", "1080p"), include_high=high is not None
+            )
         )
-        return {
-            "session_id": session_id,
-            "playlist": f"/transcode/{session_id}/low.m3u8",
-            "subtitles": [],
-            "duration": 0,
-            "seek_offset": 0,
-        }
+        return _adaptive_session_response(session_id)
     except BaseException:
         for proc in processes:
             _kill_process(proc)

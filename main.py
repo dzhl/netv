@@ -183,13 +183,7 @@ def _safe_float(value: float | str | None, default: float = 0.0) -> float:
         return default
 
 
-# Thread locks for fetch operations
-_fetch_locks: dict[str, threading.Lock] = {
-    "live": threading.Lock(),
-    "vod": threading.Lock(),
-    "series": threading.Lock(),
-    "epg": threading.Lock(),
-}
+_epg_fetch_lock = threading.Lock()
 
 
 @asynccontextmanager
@@ -555,7 +549,7 @@ def load_all_epg(epg_urls: list[tuple[str, int, str]]) -> None:
         return
 
     # No data - fetch synchronously
-    with _fetch_locks["epg"]:
+    with _epg_fetch_lock:
         if epg.has_programs():
             return
         log.info("No EPG data, fetching")
@@ -1794,6 +1788,7 @@ async def playlist_xspf(
 
 @app.get("/transcode/start")
 async def transcode_start(
+    request: Request,
     user: Annotated[dict, Depends(require_auth)],
     url: str,
     content_type: str = "live",  # "movie", "series", or "live"
@@ -1823,7 +1818,7 @@ async def transcode_start(
         if source:
             source_max_streams = source.get("max_streams", 0)
 
-    return await ffmpeg_session.start_transcode(
+    result = await ffmpeg_session.start_transcode(
         url,
         content_type,
         series_id,
@@ -1836,7 +1831,12 @@ async def transcode_start(
         source_max_streams,
         bandwidth_saver=bandwidth_saver,
         fast_start=fast_start,
+        is_disconnected=request.is_disconnected,
     )
+    if fast_start and await request.is_disconnected():
+        ffmpeg_session.stop_session(result["session_id"], force=True)
+        raise HTTPException(499, "Playback request disconnected")
+    return result
 
 
 @app.post("/transcode/{session_id}/health")
@@ -1900,7 +1900,11 @@ async def transcode_file(
     cors = {"Access-Control-Allow-Origin": "*"}
     if filename.endswith(".m3u8"):
         content = file_path.read_text()
-        if session.get("fast_start") and session.get("origin_pts") is not None:
+        if (
+            filename in ("low.m3u8", "high.m3u8")
+            and session.get("fast_start")
+            and session.get("origin_pts") is not None
+        ):
             content = dated_playlist(session["dir"], content, session["origin_pts"], session["origin_time"])
         return Response(
             content=content,
@@ -1962,10 +1966,10 @@ async def transcode_stop(
 async def transcode_stop_post(
     session_id: str,
     _user: Annotated[dict, Depends(require_auth)],
+    force: bool = False,
 ):
     """Stop a transcode session (POST for sendBeacon, VOD cached)."""
-    ffmpeg_session.stop_session(session_id, force=False)
-    return {"status": "stopped"}
+    return await transcode_stop(session_id, _user, force=force)
 
 
 @app.delete("/transcode-clear")

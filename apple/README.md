@@ -11,30 +11,54 @@ Native SwiftUI clients for iPhone, iPad, Apple TV, and Mac. All apps share the s
 
 The development default is `http://localhost:8000`. HTTP transport is enabled because neTV commonly runs on a trusted local network; production deployments should use HTTPS.
 
-## Slow-connection fallback
+## Shared adaptive live playback
 
-The Apple app requests fast start for transcoded live channels configured above
-720p. One FFmpeg ingest reads the provider and remuxes a rolling local feed; a
-720p encoder starts playback while an independent encoder prepares the configured
-quality, including AI upscaling. Both encoders read local files, so warming up or
-changing quality does not open another provider stream. This requires capacity
+The Apple app and web player request the same fast-start backend for transcoded
+live channels configured above 720p. One FFmpeg ingest reads the provider and
+remuxes a rolling local feed; a
+720p encoder builds the startup reserve first, then an independent encoder starts
+preparing the configured quality, including AI upscaling. This keeps high-quality
+GPU initialization out of initial buffer preparation, at the cost of a later
+quality upgrade. Playback does not wait for high-quality output.
+Both encoders read local files, so warming up or changing quality does not open
+another provider stream. This requires capacity
 for two local encoders and up to roughly two minutes of source segments on disk
 (source keyframe spacing can lengthen that window).
 
-The high rendition uses bounded video bitrate: 1080p targets 6 Mbps with an 8 Mbps
+The 720p rendition targets 4 Mbps with a 6 Mbps peak setting. The high rendition
+uses the same shared bitrate policy: 1080p targets 6 Mbps with an 8 Mbps
 peak setting, 1440p targets 10/14 Mbps, and 4K targets 16/20 Mbps. This replaces
-unbounded constant-QP encoding for fast-start upgrades, trading compression quality
+unbounded constant-QP encoding for adaptive live playback, trading compression quality
 for predictable bandwidth. Audio and transport overhead are additional; the
 upgrade decision still uses measured segment sizes rather than assuming the
 encoder setting is an exact network cap. NVENC uses
 [variable bitrate control](https://docs.nvidia.com/video-technologies/video-codec-sdk/13.1/ffmpeg-with-nvidia-gpu/index.html).
+The standard live AI-upscale encoder used by the native gateway shares these
+limits too; VOD encoding retains its existing quality settings.
 
-Startup waits for at least eight seconds of 720p media (or two source segment
+Ingest limits initial FFmpeg analysis to one second of media and starts the local
+720p encoder as soon as one complete source segment is available, rather than waiting
+for a second source keyframe interval before encoder warm-up. It retains probed
+packets; `nobuffer` is deliberately not used because dropping those packets can
+delay the first decodable frame. Logs report elapsed time to input readiness and
+720p readiness separately.
+
+Playback still waits for at least eight seconds of 720p media (or two source segment
 durations, whichever is longer) to bridge bursty upstream delivery. Each rendition
 keeps at least the normal 30-second live window. The app requests a 12-second
-forward buffer. Channel changes wait for any earlier startup to return its session
-ID, then confirm that session has stopped before starting the next provider feed.
-Cancelled startup requests therefore cannot leave a second provider reader behind.
+forward buffer. Apple channel changes and in-page web restarts wait for any earlier
+startup to return its session ID, then confirm that session has stopped before
+starting the next provider feed. The backend checks for disconnected requests while
+waiting for adaptive startup and cleans up their processes and files.
+
+The web player consumes a local master playlist containing the same low/high
+renditions. Hls.js starts pinned to low quality, reports buffer and recent fragment
+download measurements every two seconds, and follows the backend's health decisions
+using in-place level switching. Both playlists carry matching program dates; the
+web player does not reload the source or open another provider stream on upgrades.
+It targets a 12-second live delay when enough media is available, rather than
+treating transcoded live streams as VOD. Native browser HLS without Hls.js telemetry
+stays on the initial rendition and only sends heartbeats.
 
 An upgrade requires fresh high-quality segments caught up to the low rendition,
 at least six seconds of player buffer, and three download measurements spanning
@@ -56,10 +80,21 @@ up for eight seconds. Pauses and brief stalls do not trigger it.
 Fast-start sessions switch back to their local 720p rendition and stop the high
 encoder. Other sessions stop and retune with AI upscaling disabled, a 720p maximum
 (480p if already configured), and the low encoder quality preset. Bandwidth saver
-remains in effect across channel changes until the app restarts; global server
-settings are unchanged. Resolution and quality reduction do not impose a
-hard network bitrate cap. LTE and dropped-frame counts alone do not trigger fallback.
+remains in effect across channel changes until the Apple app restarts; the web
+player evaluates each new channel session afresh. Global server settings are
+unchanged. Legacy single-rendition fallback reduces resolution and quality without
+imposing the adaptive rendition's bitrate limits. LTE and dropped-frame counts
+alone do not trigger fallback.
 Direct/passthrough streams do not use this backend feedback mechanism.
+
+An upstream advertising `m3u8` supports HLS, but not necessarily adaptive bitrate.
+Confirm multiple `#EXT-X-STREAM-INF` variants in a channel's master playlist before
+assuming provider-side adaptation is available. A media playlist with only
+`#EXTINF` segments is a single rendition. Inspect provider playlists only when a
+connection slot is free: even a playlist request can count as a stream on
+single-connection accounts. The fast-start path creates its two qualities locally;
+it does not implement provider-side adaptive bitrate switching. Its ingest already
+avoids a separate `ffprobe` connection regardless of the `probe_live` setting.
 
 To check on a device, play a transcoded live channel and throttle the connection
 until it repeatedly runs out of buffer. Check that the high-quality encoder stops
@@ -69,10 +104,13 @@ another channel starts with bandwidth saver still enabled. Restarting the app
 allows the configured quality to be tried again.
 
 For backend testing on `aitony.tulane`, use the updated Apple app with this branch
-on the server. Confirm startup at 720p, upgrade on a healthy connection, continued
+on the server, or reload the web player after restarting the updated backend.
+Confirm startup at 720p, upgrade on a healthy connection, continued
 720p while the high encoder is unavailable, and cleanup of all three processes
-when playback stops. The backend fast-start path is opt-in through
-`/transcode/start?fast_start=true`; older clients retain their existing behavior.
+when playback stops. The backend fast-start path is selected by both clients through
+`/transcode/start?fast_start=true`; older clients and gateway players retain their existing
+playback contracts. The response includes `playlist` for the initial rendition and
+`master_playlist` for clients that switch HLS levels in place.
 The service logs `Playback quality` every ten seconds, including the decision
 reason, buffer, measured throughput, high-quality bitrate, and alignment state.
 

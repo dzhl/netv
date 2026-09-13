@@ -23,7 +23,9 @@ from ffmpeg_command import (
     get_series_probe_cache_stats,
     get_transcode_dir,
     get_user_agent,
+    http_reconnect_args,
     invalidate_series_probe_cache,
+    limit_live_video_bitrate,
     probe_media,
     restore_probe_cache_entry,
 )
@@ -534,6 +536,48 @@ class TestBuildHlsFfmpegCmd:
         assert "0:3" in cmd
         assert "/tmp/out/sub0.vtt" in cmd
         assert "/tmp/out/sub1.vtt" in cmd
+
+
+@pytest.mark.parametrize("url", ["http://test/live.ts", "https://test/live.m3u8"])
+def test_http_reconnect_options_shared_by_live_and_vod(url):
+    for is_vod in (False, True):
+        cmd = build_hls_ffmpeg_cmd(url, "software", "/tmp", is_vod=is_vod)
+        expected = http_reconnect_args(url)
+        start = cmd.index("-reconnect")
+        assert cmd[start : start + len(expected)] == expected
+        assert start + len(expected) <= cmd.index("-i")
+    assert http_reconnect_args(url, max_delay=5)[-1] == "5"
+
+
+@pytest.mark.parametrize("url", ["/tmp/input.m3u8", "file:/tmp/input.ts", "udp://test:1234"])
+def test_non_http_inputs_do_not_need_command_repairs(url):
+    assert http_reconnect_args(url) == []
+    cmd = build_hls_ffmpeg_cmd(url, "software", "/tmp")
+    assert not any(arg.startswith("-reconnect") for arg in cmd)
+
+
+@pytest.mark.parametrize("is_vod", [False, True])
+def test_live_ai_upscale_uses_shared_bitrate_policy(is_vod):
+    with (
+        patch("ffmpeg_command._load_settings", return_value={"sr_model": "nomos"}),
+        patch("ffmpeg_command._sr_engine_dir", "/models"),
+        patch("ffmpeg_command._build_sr_filter", return_value="dnn_processing=model=test"),
+    ):
+        cmd = build_hls_ffmpeg_cmd(
+            "https://provider.example/live.m3u8", "nvenc+software", "/tmp/output",
+            is_vod=is_vod, max_resolution="4k",
+        )
+    if is_vod:
+        assert cmd[cmd.index("-rc") + 1] == "constqp"
+        assert "-maxrate" not in cmd
+    else:
+        assert cmd[cmd.index("-rc") + 1] == "vbr"
+        assert cmd[cmd.index("-b:v") + 1] == "16000000"
+        assert cmd[cmd.index("-maxrate") + 1] == "20000000"
+        original = cmd.copy()
+        limit_live_video_bitrate(cmd, "4k")
+        assert cmd == original
+        assert cmd.count("-maxrate") == 1
 
 
 # =============================================================================

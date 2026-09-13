@@ -27,6 +27,10 @@
   let lastSavedPosition = 0;
   let savePositionTimeout = null;
   let autoMutedByPolicy = false;
+  const transcodeSession = new window.NetvPlayback.TranscodeSession(cfg.isVod);
+  let adaptiveSession = null;
+  let adaptivePlayback = null;
+  let transcodePlaylist = null;
 
   // ============================================================
   // Utilities
@@ -97,6 +101,8 @@
   }
 
   function showError() {
+    adaptivePlayback?.destroy();
+    adaptivePlayback = null;
     hideLoading();
     error.classList.remove('hidden');
   }
@@ -432,6 +438,10 @@
 
   async function cleanupTranscode() {
     if (document.pictureInPictureElement === video) return;
+    adaptivePlayback?.destroy();
+    adaptivePlayback = null;
+    adaptiveSession = null;
+    transcodePlaylist = null;
     stopProgressPolling();
     if (subtitlePollTimerId) {
       clearInterval(subtitlePollTimerId);
@@ -449,19 +459,14 @@
     activeTrackStates = null;
     document.getElementById('menu-jump')?.classList.add('hidden');
     document.getElementById('seek-container').classList.add('hidden');
-    if (transcodeSessionId) {
-      const sessionToStop = transcodeSessionId;
-      transcodeSessionId = null;
-      try {
-        await fetch('/transcode/' + sessionToStop, {method: 'DELETE'});
-      } catch (e) {
-        console.error('Cleanup error:', e);
-      }
-    }
+    await transcodeSession.stop();
+    transcodeSessionId = null;
   }
 
   function cleanupTranscodeSync() {
     if (document.pictureInPictureElement === video) return;
+    adaptivePlayback?.destroy();
+    adaptivePlayback = null;
     stopProgressPolling();
     if (subtitlePollTimerId) {
       clearInterval(subtitlePollTimerId);
@@ -471,11 +476,8 @@
       currentHls.destroy();
       currentHls = null;
     }
-    if (transcodeSessionId) {
-      const blob = new Blob([], {type: 'application/json'});
-      navigator.sendBeacon('/transcode/' + transcodeSessionId + '/stop', blob);
-      transcodeSessionId = null;
-    }
+    transcodeSession.close();
+    transcodeSessionId = null;
   }
 
   async function handleSeekToPosition(targetTime) {
@@ -541,18 +543,20 @@
 
   async function startTranscode(onError) {
     showLoading();
-    await cleanupTranscode();
     try {
+      await cleanupTranscode();
       let url = '/transcode/start?url=' + encodeURIComponent(cfg.rawUrl) + '&content_type=' + cfg.streamType;
       if (cfg.seriesId) url += '&series_id=' + cfg.seriesId;
       if (cfg.episodeId) url += '&episode_id=' + cfg.episodeId;
       if (cfg.seriesName) url += '&series_name=' + encodeURIComponent(cfg.seriesName);
       if (cfg.deinterlaceFallback !== undefined) url += '&deinterlace_fallback=' + (cfg.deinterlaceFallback ? '1' : '0');
       if (cfg.sourceId) url += '&source_id=' + encodeURIComponent(cfg.sourceId);
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error('Transcode start failed: ' + resp.status);
-      const data = await resp.json();
+      if (!cfg.isVod) url += '&fast_start=true';
+      const data = await transcodeSession.start(url);
+      if (!data) return;
       transcodeSessionId = data.session_id;
+      transcodePlaylist = data.playlist;
+      adaptiveSession = !cfg.isVod && data.playlist.endsWith('/low.m3u8') ? data : null;
       isTranscoding = true;
       updateTranscodeCheck();
       totalDuration = data.duration || 0;
@@ -568,7 +572,7 @@
         }
         enableCcButton();
       }
-      playWithUrl(data.playlist, onError, data.subtitles);
+      playWithUrl(data.master_playlist || data.playlist, onError, data.subtitles);
     } catch (e) {
       console.error('[TC] Error:', e);
       if (onError) onError();
@@ -582,17 +586,22 @@
 
   function playWithUrl(url, onError, subtitles) {
     showLoading();
+    adaptivePlayback?.destroy();
+    adaptivePlayback = null;
     const useHls = Hls.isSupported() && (
       url.includes('.m3u8') || url.includes('/live/') || url.includes('/transcode')
     );
     if (!useHls) {
-      video.src = url;
+      // Native HLS without download telemetry stays on the safe initial rendition.
+      video.src = adaptiveSession ? adaptiveSession.playlist : url;
+      if (adaptiveSession) startAdaptivePlayback(null);
       video.addEventListener('loadedmetadata', function() {
         hideLoading();
         error.classList.add('hidden');
         if (video.textTracks.length === 0) disableCcButton();
         applyCaptionsSetting();
         restorePosition();
+        if (transcodeSessionId && !adaptiveSession) startProgressPolling();
         video.play().catch(() => { if (!video.muted) { autoMutedByPolicy = true; video.muted = true; } video.play(); });
       }, { once: true });
       video.addEventListener('error', function() {
@@ -602,14 +611,19 @@
       return;
     }
 
-    const isVodUrl = url.includes('/transcode');
-    const hls = new Hls(createHlsConfig({isVod: isVodUrl}));
+    const hls = new Hls({
+      ...createHlsConfig({isVod: cfg.isVod}),
+      ...(adaptiveSession ? { liveSyncDuration: 12, liveSyncDurationCount: undefined } : {}),
+    });
     currentHls = hls;
     let recoveryAttempts = 0;
     let hasLoaded = false;
 
-    hls.loadSource(url);
-    hls.attachMedia(video);
+    if (adaptiveSession) {
+      // Older servers can supply low.m3u8 without a master; keep their session
+      // alive but do not request upgrades that cannot be switched safely.
+      startAdaptivePlayback(adaptiveSession.master_playlist ? hls : null);
+    }
 
     // Timeout for initial load (Auto mode only)
     let loadTimeout = null;
@@ -661,7 +675,7 @@
       if (cfg.captionsEnabled && hls.subtitleTracks.length > 0) {
         hls.subtitleTrack = getPreferredSubtitleTrack(hls.subtitleTracks);
       }
-      if (transcodeSessionId && isVodUrl) startProgressPolling();
+      if (transcodeSessionId && !adaptiveSession) startProgressPolling();
       restorePosition();
       video.play().catch(() => { if (!video.muted) { autoMutedByPolicy = true; video.muted = true; } video.play(); });
       setTimeout(() => {
@@ -704,6 +718,18 @@
           else showError();
         }
       }
+    });
+    hls.loadSource(url);
+    hls.attachMedia(video);
+  }
+
+  function startAdaptivePlayback(hls) {
+    adaptivePlayback = new window.NetvPlayback.AdaptiveLivePlayback({
+      video,
+      hls,
+      sessionId: transcodeSessionId,
+      playlist: adaptiveSession.playlist,
+      onPlaylist: playlist => { transcodePlaylist = playlist; },
     });
   }
 
@@ -1034,10 +1060,15 @@
       video.src = '';
       error.classList.add('hidden');
       if (isTranscoding) {
-        await cleanupTranscode();
-        isTranscoding = false;
-        updateTranscodeCheck();
-        playWithUrl(cfg.rawUrl);
+        try {
+          await cleanupTranscode();
+          isTranscoding = false;
+          updateTranscodeCheck();
+          playWithUrl(cfg.rawUrl);
+        } catch (e) {
+          console.error('[TC] Unable to stop transcode:', e);
+          showError();
+        }
       } else {
         await startTranscode();
       }
@@ -1208,7 +1239,8 @@
       const host = cfg.castHost || window.location.host;
       const proto = window.location.protocol;
       if (transcodeSessionId) {
-        return proto + '//' + host + '/transcode/' + transcodeSessionId + '/stream.m3u8';
+        const path = transcodePlaylist || '/transcode/' + transcodeSessionId + '/stream.m3u8';
+        return proto + '//' + host + path;
       }
       if (cfg.rawUrl.includes('localhost') || cfg.rawUrl.includes('127.0.0.1')) {
         return cfg.rawUrl.replace(/localhost|127\.0\.0\.1/, host.split(':')[0]);
@@ -1349,6 +1381,13 @@
 
     window.addEventListener('beforeunload', cleanupTranscodeSync);
     window.addEventListener('pagehide', cleanupTranscodeSync);
+    window.addEventListener('pageshow', event => {
+      if (event.persisted && transcodeSession.closed) {
+        transcodeSession.reopen();
+        if (isTranscoding) startTranscode();
+        else playWithUrl(cfg.rawUrl);
+      }
+    });
 
     // Start playback based on transcode mode
     if (cfg.transcodeMode === 'always') {

@@ -471,8 +471,7 @@ def test_stream_id_registry_is_stable(tmp_path: Path):
     assigned = first.get_or_create_many(["source-a:live:7", "source-b:live:7"])
 
     second = StreamIdRegistry(path)
-    assert second.get_or_create("source-a:live:7") == assigned["source-a:live:7"]
-    assert second.get_or_create("source-b:live:7") == assigned["source-b:live:7"]
+    assert second.get_or_create_many(["source-b:live:7", "source-a:live:7"]) == assigned
     assert assigned["source-a:live:7"] != assigned["source-b:live:7"]
 
 
@@ -481,7 +480,7 @@ def test_stream_id_registry_rejects_invalid_existing_file(tmp_path: Path):
     path.write_text("[]")
 
     with pytest.raises(RuntimeError, match="Invalid gateway stream ID registry"):
-        StreamIdRegistry(path).get_or_create("source-a:live:7")
+        StreamIdRegistry(path).get_or_create_many(["source-a:live:7"])
 
     assert path.read_text() == "[]"
 

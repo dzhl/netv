@@ -32,7 +32,6 @@ _fetch_locks: dict[str, threading.Lock] = {
     "live": threading.Lock(),
     "vod": threading.Lock(),
     "series": threading.Lock(),
-    "epg": threading.Lock(),
 }
 
 
@@ -122,34 +121,13 @@ def _fetch_all_live_data() -> tuple[list[dict], list[dict], list[tuple[str, int,
 
     for source in get_sources():
         try:
-            if source.type == "xtream":
-                client = _make_client(source)
-                cats = client.get_live_categories()
-                streams = client.get_live_streams()
-                for c in cats:
-                    c["source_id"] = source.id
-                    c["category_id"] = f"{source.id}_{c['category_id']}"
-                for s in streams:
-                    s["source_id"] = source.id
-                    s["source_type"] = "xtream"
-                    s["source_url"] = source.url
-                    s["source_username"] = source.username
-                    s["source_password"] = source.password
-                    orig_cats = s.get("category_ids") or [s.get("category_id")]
-                    s["category_ids"] = [f"{source.id}_{c}" for c in orig_cats if c]
-                all_categories.extend(cats)
-                all_streams.extend(streams)
-                if source.epg_enabled:
-                    epg_urls.append((client.epg_url, source.epg_timeout, source.id))
-            elif source.type == "m3u":
-                cats, streams, epg_url = fetch_m3u(source.url, source.id)
-                all_categories.extend(cats)
-                all_streams.extend(streams)
-                if epg_url and source.epg_enabled:
-                    epg_urls.append((epg_url, source.epg_timeout, source.id))
-            elif source.type == "epg":
-                if source.epg_enabled:
-                    epg_urls.append((source.url, source.epg_timeout, source.id))
+            cats, streams, epg_url, timeout = fetch_source_live_data(
+                source, persist_epg_url=False
+            )
+            all_categories.extend(cats)
+            all_streams.extend(streams)
+            if epg_url and source.epg_enabled:
+                epg_urls.append((epg_url, timeout, source.id))
         except Exception as e:
             log.error("Error loading source %s: %s", source.name, e)
 
@@ -270,14 +248,7 @@ def _fetch_vod_data() -> tuple[list[dict], list[dict]]:
         if source.type != "xtream":
             continue
         try:
-            client = _make_client(source)
-            cats = client.get_vod_categories()
-            streams = client.get_vod_streams()
-            # Tag with source_id for playback and access control
-            for c in cats:
-                c["source_id"] = source.id
-            for s in streams:
-                s["source_id"] = source.id
+            cats, streams = fetch_source_vod_data(source)
             all_cats.extend(cats)
             all_streams.extend(streams)
         except Exception as e:
@@ -408,19 +379,6 @@ def get_xtream_client_by_source(source_id: str) -> XtreamClient | None:
         if source.id == source_id and source.type == "xtream":
             return _make_client(source)
     return None
-
-
-def get_first_xtream_source_and_client() -> tuple[str, XtreamClient] | tuple[None, None]:
-    """Get the first available Xtream source ID and client."""
-    for source in get_sources():
-        if source.type == "xtream":
-            return source.id, _make_client(source)
-    return None, None
-
-
-def get_fetch_lock(name: str) -> threading.Lock:
-    """Get fetch lock by name."""
-    return _fetch_locks[name]
 
 
 def get_refresh_in_progress() -> set[str]:

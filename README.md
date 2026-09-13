@@ -46,6 +46,7 @@ through their IPTV providers.
 - **Movies & Series** with metadata, seasons, episodes
 - **Real-time 4K AI Upscale** - 1080p → 4K at 70+ FPS through TensorRT on an RTX 5090
 - **GPU-accelerated transcoding** - NVDEC, TensorRT, and NVENC with low-latency HLS
+- **Playback resolution badge** - Web and Apple players show the actual video resolution, including 720p, 1080p, and 4K
 - **Chromecast** support (HTTPS required)
 - **Closed captions** with style customization
 - **Search** across all content (supports regex)
@@ -82,6 +83,25 @@ Extensively optimized for minimal latency and CPU usage:
 - **Smart seeking** - Reuses segments for backward seeks, only transcodes gaps
 - **Session recovery** - VOD sessions survive restarts, resume where you left off
 - **HTTPS passthrough** - Auto-proxies HTTP streams when behind HTTPS
+
+Apple and web clients share the adaptive live transcoder for configured outputs
+above 720p: one provider ingest, a 720p startup rendition, and a separately warmed
+high-quality rendition. Both use the same backend buffer/throughput policy for
+upgrades and fallback. The web player switches Hls.js levels within one media
+element using matching playlist dates, and targets 12 seconds behind the live edge
+when enough media is available. Native browser HLS without Hls.js telemetry stays
+at the safe initial quality.
+
+Live bitrate targets/maximum settings are 4/6 Mbps for 720p, 6/8 Mbps for 1080p,
+10/14 Mbps for 1440p, and 16/20 Mbps for 4K, plus audio and transport overhead.
+The native gateway's standard live AI-upscale path shares the bitrate policy.
+VOD seek/resume, lower-resolution single-rendition playback, and direct playback
+retain their existing contracts. All transcoders share HTTP reconnect and process
+launching; local inputs do not receive HTTP reconnect flags.
+
+Bulk live/VOD catalog refreshes reuse the per-source loaders used for individual
+source refreshes. Bulk refreshes do not rewrite saved EPG URLs, and a failed source
+is logged without preventing other sources from loading.
 
 ### 4K AI Upscaling
 
@@ -451,6 +471,12 @@ pip install .
 ```
 
 Open http://localhost:8000, create an admin account, and add your IPTV source.
+
+Web playback regression checks use Node's built-in runner (Node 18+):
+
+```bash
+node --test collector_tests/*.test.cjs
+```
 
 ### Additional Gems
 
