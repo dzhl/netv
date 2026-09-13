@@ -158,11 +158,21 @@ final class APIClient {
     }
 
     func stopTranscode(server: String, sessionID: String) async {
+        try? await releaseTranscode(server: server, sessionID: sessionID)
+    }
+
+    func releaseTranscode(server: String, sessionID: String) async throws {
         guard let baseURL = normalizedServerURL(server),
-              let url = URL(string: "transcode/\(sessionID)?force=true", relativeTo: baseURL) else { return }
+              let url = URL(string: "transcode/\(sessionID)?force=true", relativeTo: baseURL) else {
+            throw APIError.invalidServer
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
-        _ = try? await data(for: request, operation: "stop transcode")
+        let (_, response) = try await data(for: request, operation: "stop transcode")
+        guard let status = (response as? HTTPURLResponse)?.statusCode,
+              status == 200 || status == 404 else {
+            throw APIError.server("Unable to release the previous stream. Please retry.")
+        }
     }
 
     func reportPlaybackHealth(server: String, sessionID: String, health: PlaybackHealth) async throws -> PlaybackHealthResponse {

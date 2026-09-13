@@ -21,6 +21,13 @@ changing quality does not open another provider stream. This requires capacity
 for two local encoders and up to roughly two minutes of source segments on disk
 (source keyframe spacing can lengthen that window).
 
+Startup waits for at least eight seconds of 720p media (or two source segment
+durations, whichever is longer) to bridge bursty upstream delivery. Each rendition
+keeps at least the normal 30-second live window. The app requests a 12-second
+forward buffer. Channel changes wait for any earlier startup to return its session
+ID, then confirm that session has stopped before starting the next provider feed.
+Cancelled startup requests therefore cannot leave a second provider reader behind.
+
 An upgrade requires fresh high-quality segments caught up to the low rendition,
 at least six seconds of player buffer, and six seconds of download samples with
 50% headroom over the largest recent high-quality segment bitrate. Unavailable
@@ -55,3 +62,11 @@ on the server. Confirm startup at 720p, upgrade on a healthy connection, continu
 720p while the high encoder is unavailable, and cleanup of all three processes
 when playback stops. The backend fast-start path is opt-in through
 `/transcode/start?fast_start=true`; older clients retain their existing behavior.
+
+The cancellation/rapid-tuning regression check uses a fake transport with the real
+app model. On a Mac, compile and run it with:
+
+```sh
+xcrun swiftc -parse-as-library Shared/Models.swift Shared/AppModel.swift Tests/PlaybackStartChecks.swift -o /tmp/netv-playback-start-checks
+/tmp/netv-playback-start-checks
+```

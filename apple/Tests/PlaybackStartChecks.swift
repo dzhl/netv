@@ -1,0 +1,90 @@
+// Compile with Shared/Models.swift and Shared/AppModel.swift, excluding APIClient.swift.
+// The fake transport holds a start open to reproduce channel changes during startup.
+import Foundation
+import Combine
+
+struct PlaybackConfiguration {
+    let url: URL
+    let cookieHeader: String? = nil
+    let transcodeSessionID: String?
+}
+struct PlaybackHealth {}
+struct PlaybackHealthResponse { let bandwidthSaver: Bool }
+enum APIError: Error { case authenticationFailed, server(String) }
+
+@MainActor
+final class APIClient {
+    static var starts = 0
+    static var active: Set<String> = []
+    static var overlapping = false
+    static var failRelease = false
+    func playbackConfiguration(server: String, channelID: String, bandwidthSaver: Bool) async throws -> PlaybackConfiguration {
+        Self.starts += 1
+        let id = "session-\(Self.starts)"
+        Self.active.insert(id)
+        Self.overlapping = Self.overlapping || Self.active.count > 1
+        try await Task.sleep(for: .milliseconds(150))
+        return PlaybackConfiguration(url: URL(string: "http://localhost/\(id)")!, transcodeSessionID: id)
+    }
+    func releaseTranscode(server: String, sessionID: String) async throws {
+        if Self.failRelease { throw APIError.server("stop failed") }
+        Self.active.remove(sessionID)
+    }
+    func stopTranscode(server: String, sessionID: String) async {
+        try? await releaseTranscode(server: server, sessionID: sessionID)
+    }
+    func validateSession(server: String) async throws -> Bool { false }
+    func login(server: String, username: String, password: String) async throws -> Bool { true }
+    func logout(server: String) async {}
+    func guide(server: String) async throws -> [ChannelRow] { [] }
+    func reportPlaybackHealth(server: String, sessionID: String, health: PlaybackHealth) async throws -> PlaybackHealthResponse {
+        PlaybackHealthResponse(bandwidthSaver: false)
+    }
+}
+
+@main
+struct PlaybackStartChecks {
+    @MainActor
+    static func main() async throws {
+        let model = AppModel()
+        func selection(_ id: String) throws -> PlayerSelection {
+            let data = Data("{\"stream_id\":\"\(id)\",\"name\":\"Test\",\"icon\":\"\"}".utf8)
+            return PlayerSelection(channel: try JSONDecoder().decode(Channel.self, from: data), program: nil)
+        }
+        let a = try selection("a")
+        let b = try selection("b")
+        let c = try selection("c")
+        model.selection = a
+        let first = Task { try await model.playerConfiguration(for: a) }
+        while APIClient.starts == 0 { await Task.yield() }
+        first.cancel()
+        model.selection = b
+        let second = Task { try await model.playerConfiguration(for: b) }
+        await Task.yield()
+        second.cancel()
+        model.selection = c
+        let third = Task { try await model.playerConfiguration(for: c) }
+        _ = try? await first.value
+        _ = try? await second.value
+        let current = try await third.value
+        precondition(!APIClient.overlapping, "Channel changes opened overlapping provider sessions")
+        precondition(APIClient.active == [current.transcodeSessionID!], "Cancelled startup leaked a session")
+
+        APIClient.failRelease = true
+        let startsBeforeFailure = APIClient.starts
+        for _ in 0..<2 {
+            do {
+                _ = try await model.playerConfiguration(for: c)
+                preconditionFailure("Started playback despite failing to release the old session")
+            } catch {}
+        }
+        precondition(APIClient.starts == startsBeforeFailure)
+        APIClient.failRelease = false
+        let recovered = try await model.playerConfiguration(for: c)
+        precondition(!APIClient.overlapping)
+        precondition(APIClient.active == [recovered.transcodeSessionID!])
+        await model.stopPlayback(sessionID: recovered.transcodeSessionID!)
+        precondition(APIClient.active.isEmpty)
+        print("Playback startup checks passed: cancellation, rapid tuning, failed release, recovery")
+    }
+}

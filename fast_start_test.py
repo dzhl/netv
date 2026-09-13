@@ -61,6 +61,8 @@ def test_commands_only_ingest_opens_provider(tmp_path):
     url = "https://provider.example/live.ts"
     ingest = fast_start.ingest_command(url, str(tmp_path), "neTV")
     assert ingest[ingest.index("-i") + 1] == url
+    assert ingest[ingest.index("-reconnect_on_network_error") + 1] == "1"
+    assert "-reconnect" not in fast_start.ingest_command("/tmp/source.ts", str(tmp_path), None)
     for high in (False, True):
         cmd = fast_start.encoder_command(
             str(tmp_path), "software", "1080p" if high else "720p", "low", False, high
@@ -69,6 +71,8 @@ def test_commands_only_ingest_opens_provider(tmp_path):
         assert cmd[cmd.index("-i") + 1] == f"{tmp_path}/input.m3u8"
         assert "-reconnect" not in cmd
         assert "-copyts" in cmd
+        duration = float(cmd[cmd.index("-hls_time") + 1])
+        assert duration * int(cmd[cmd.index("-hls_list_size") + 1]) >= 30
 
 
 def test_upgrade_requires_sustained_headroom_and_fallback_latches(tmp_path):
@@ -124,6 +128,7 @@ async def test_shared_session_cleanup(tmp_path, fail_high):
     def ready(directory, name):
         if name == "input.m3u8":
             (pathlib.Path(directory) / "input_0.ts").write_bytes(video_packet(10))
+            (pathlib.Path(directory) / name).write_text("#EXTM3U\n#EXTINF:4,\ninput_0.ts\n")
         return 10000
 
     with (
@@ -132,8 +137,12 @@ async def test_shared_session_cleanup(tmp_path, fail_high):
         patch("ffmpeg_session.asyncio.create_subprocess_exec", side_effect=launch),
         patch("ffmpeg_session._spawn_background_task", side_effect=lambda coro: coro.close()),
         patch("ffmpeg_session.ready_bitrate", side_effect=ready),
+        # Input is ready, but 2s and 6s of output cannot bridge a 4s source's
+        # delivery gaps. Startup must wait for the full 8s reserve.
+        patch("ffmpeg_session.playlist_duration", side_effect=[4, 2, 6, 8]) as duration,
     ):
         result = await ffmpeg_session.start_transcode("https://provider/live", fast_start=True)
+        assert duration.call_count == 4
         assert result["playlist"].endswith("/low.m3u8")
         assert sum("https://provider/live" in cmd for cmd, _ in launched) == 1
         ffmpeg_session.stop_session(result["session_id"], force=True)

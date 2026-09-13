@@ -20,6 +20,9 @@ final class AppModel: ObservableObject {
     }
 
     private let client = APIClient()
+    private var playbackStartTask: Task<PlaybackConfiguration, Error>?
+    private var playbackSessionToRelease: (server: String, id: String)?
+    private var playbackStartGeneration = 0
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.netv",
         category: "App"
@@ -79,7 +82,40 @@ final class AppModel: ObservableObject {
     }
 
     func playerConfiguration(for selection: PlayerSelection) async throws -> PlaybackConfiguration {
-        try await client.playbackConfiguration(server: server, channelID: selection.channel.id, bandwidthSaver: bandwidthSaver)
+        let previous = playbackStartTask
+        let requestServer = server
+        playbackStartGeneration += 1
+        let generation = playbackStartGeneration
+        // Keep an in-flight start alive long enough to receive its session ID.
+        // Cancelling its HTTP request doesn't cancel the server's encoder startup.
+        let request = Task {
+            if let previous { _ = try? await previous.value }
+            if let previousSession = playbackSessionToRelease {
+                try await client.releaseTranscode(server: previousSession.server, sessionID: previousSession.id)
+                playbackSessionToRelease = nil
+            }
+            guard generation == playbackStartGeneration,
+                  self.selection?.id == selection.id else {
+                throw CancellationError()
+            }
+            let configuration = try await client.playbackConfiguration(
+                server: requestServer, channelID: selection.channel.id,
+                bandwidthSaver: bandwidthSaver
+            )
+            if let sessionID = configuration.transcodeSessionID {
+                playbackSessionToRelease = (requestServer, sessionID)
+            }
+            return configuration
+        }
+        playbackStartTask = request
+        let configuration = try await request.value
+        if Task.isCancelled {
+            if let sessionID = configuration.transcodeSessionID {
+                await client.stopTranscode(server: requestServer, sessionID: sessionID)
+            }
+            throw CancellationError()
+        }
+        return configuration
     }
 
     func reportPlaybackHealth(sessionID: String, health: PlaybackHealth) async throws -> PlaybackHealthResponse {

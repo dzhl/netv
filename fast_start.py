@@ -6,12 +6,25 @@ import pathlib
 import re
 import time
 
-from ffmpeg_command import build_hls_ffmpeg_cmd
+from ffmpeg_command import build_hls_ffmpeg_cmd, get_live_hls_list_size
 
 
 def ingest_command(url: str, directory: str, user_agent: str | None) -> list[str]:
     # Remux only. No probe subprocess and no encoder may open the provider URL.
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    if url.startswith(("http://", "https://")):
+        cmd += [
+            "-reconnect",
+            "1",
+            "-reconnect_streamed",
+            "1",
+            "-reconnect_on_network_error",
+            "1",
+            "-reconnect_on_http_error",
+            "4xx,5xx",
+            "-reconnect_delay_max",
+            "5",
+        ]
     if user_agent:
         cmd += ["-user_agent", user_agent]
     return cmd + [
@@ -72,14 +85,23 @@ def encoder_command(
     prefix = "high" if high else "low"
     cmd[cmd.index("-hls_segment_filename") + 1] = f"{directory}/{prefix}_%06d.ts"
     cmd[cmd.index("-hls_flags") + 1] = "delete_segments+temp_file"
-    duration = "2" if high else "1"
+    duration = "2"
     cmd[cmd.index("-hls_time") + 1] = duration
+    cmd[cmd.index("-hls_list_size") + 1] = str(get_live_hls_list_size(float(duration)))
     cmd[-1:-1] = [
         "-force_key_frames",
         f"expr:if(isnan(prev_forced_t),1,gte(t,prev_forced_t+{duration}))",
     ]
     cmd[-1] = f"{directory}/{prefix}.m3u8"
     return cmd
+
+
+def playlist_duration(directory: str, name: str) -> float:
+    try:
+        content = (pathlib.Path(directory) / name).read_text()
+        return sum(float(value) for value in re.findall(r"#EXTINF:([\d.]+)", content))
+    except (OSError, ValueError):
+        return 0
 
 
 def segment_pts(path: pathlib.Path) -> float | None:

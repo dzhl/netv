@@ -19,7 +19,14 @@ import uuid
 
 from fastapi import HTTPException
 
-from fast_start import aligned, encoder_command, ingest_command, ready_bitrate, segment_pts
+from fast_start import (
+    aligned,
+    encoder_command,
+    ingest_command,
+    playlist_duration,
+    ready_bitrate,
+    segment_pts,
+)
 from ffmpeg_command import (
     SEG_PREFIX,
     HwAccel,
@@ -1387,7 +1394,27 @@ async def _start_fast_live(
     directory = tempfile.mkdtemp(prefix=f"netv_transcode_{session_id}_", dir=get_transcode_dir())
     processes: list[asyncio.subprocess.Process] = []
 
-    async def launch(cmd: list[str]) -> asyncio.subprocess.Process:
+    async def monitor(proc: asyncio.subprocess.Process, role: str) -> None:
+        assert proc.stderr is not None
+        recent: list[str] = []
+        while line := await proc.stderr.readline():
+            message = re.sub(
+                r"https?://[^\s\]]+",
+                lambda match: redact_url_credentials(match.group()),
+                line.decode(errors="replace").rstrip(),
+            )
+            recent = (recent + [message])[-10:]
+        await proc.wait()
+        if get_session(session_id):
+            log.warning(
+                "Fast-start %s exited for %s (code %s): %s",
+                role,
+                session_id,
+                proc.returncode,
+                " | ".join(recent) or "no stderr",
+            )
+
+    async def launch(cmd: list[str], role: str) -> asyncio.subprocess.Process:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.DEVNULL,
@@ -1396,19 +1423,25 @@ async def _start_fast_live(
             env=get_ffmpeg_env(),
         )
         processes.append(proc)
-        _spawn_background_task(_monitor_ffmpeg_stderr(proc, session_id, []))
+        _spawn_background_task(monitor(proc, role))
+        log.info("Fast-start %s launched for session %s", role, session_id)
         return proc
 
-    async def wait_ready(name: str, proc: asyncio.subprocess.Process) -> None:
+    async def wait_ready(
+        name: str, proc: asyncio.subprocess.Process, minimum_duration: float = 0
+    ) -> None:
         deadline = time.monotonic() + _PLAYLIST_WAIT_TIMEOUT_SEC
         while time.monotonic() < deadline and proc.returncode is None:
-            if ready_bitrate(directory, name):
+            if (
+                ready_bitrate(directory, name)
+                and playlist_duration(directory, name) >= minimum_duration
+            ):
                 return
             await asyncio.sleep(_POLL_INTERVAL_SEC)
         raise HTTPException(500, "Fast-start stream failed to become ready")
 
     try:
-        ingest = await launch(ingest_command(url, directory, get_user_agent()))
+        ingest = await launch(ingest_command(url, directory, get_user_agent()), "ingest")
         with _transcode_lock:
             _transcode_sessions[session_id] = {
                 "dir": directory,
@@ -1434,7 +1467,9 @@ async def _start_fast_live(
         with _transcode_lock:
             _transcode_sessions[session_id].update(origin_pts=origin_pts, origin_time=time.time())
         hw = settings.get("transcode_hw", "software")
-        low = await launch(encoder_command(directory, hw, "720p", "low", deinterlace, False))
+        low = await launch(
+            encoder_command(directory, hw, "720p", "low", deinterlace, False), "720p"
+        )
         with _transcode_lock:
             _transcode_sessions[session_id].update(process=low, extra_processes=[ingest])
         try:
@@ -1446,7 +1481,8 @@ async def _start_fast_live(
                     settings.get("quality", "high"),
                     deinterlace,
                     True,
-                )
+                ),
+                "high-quality",
             )
             with _transcode_lock:
                 _transcode_sessions[session_id].update(
@@ -1454,7 +1490,17 @@ async def _start_fast_live(
                 )
         except OSError:
             log.exception("High-quality encoder unavailable; continuing at 720p")
-        await wait_ready("low.m3u8", low)
+        # A remuxed source is released in source-keyframe-sized bursts. A couple
+        # of tiny output segments cannot bridge the next upstream delivery gap.
+        input_text = (pathlib.Path(directory) / "input.m3u8").read_text()
+        input_durations = [float(value) for value in re.findall(r"#EXTINF:([\d.]+)", input_text)]
+        startup_buffer = max(8.0, 2 * max(input_durations, default=4.0))
+        await wait_ready("low.m3u8", low, startup_buffer)
+        log.info(
+            "Fast-start session %s ready at 720p with %.1fs startup reserve",
+            session_id,
+            startup_buffer,
+        )
         return {
             "session_id": session_id,
             "playlist": f"/transcode/{session_id}/low.m3u8",

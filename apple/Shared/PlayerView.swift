@@ -103,6 +103,7 @@ struct PlayerView: View {
                 }
                 try Task.checkCancellation()
                 var item = AVPlayerItem(asset: asset)
+                item.preferredForwardBufferDuration = 12
                 var currentPlayer = AVPlayer(playerItem: item)
                 currentPlayer.isMuted = false
                 currentPlayer.volume = 1
@@ -176,6 +177,7 @@ struct PlayerView: View {
         url: URL, options: [String: Any], currentItem: AVPlayerItem
     ) async throws -> AVPlayer {
         let item = AVPlayerItem(asset: AVURLAsset(url: url, options: options))
+        item.preferredForwardBufferDuration = 12
         let candidate = AVPlayer(playerItem: item)
         let deadline = Date().addingTimeInterval(8)
         while item.status == .unknown && Date() < deadline {
