@@ -43,7 +43,7 @@ from ffmpeg_command import (
     resolve_hls_master_playlist,
     restore_probe_cache_entry,
 )
-from playback_policy import PlaybackHealth, PlaybackPolicy
+from playback_policy import PlaybackHealth, PlaybackPolicy, UpgradePolicy
 from util import redact_url_credentials
 
 
@@ -1361,26 +1361,37 @@ def report_playback_health(
         if session.get("fast_start"):
             high_alive = _is_process_alive(session.get("high_process"))
             bitrate = ready_bitrate(session["dir"], "high.m3u8") if high_alive else 0
-            enough = (
-                bitrate > 0
-                and aligned(session["dir"])
-                and health.buffer_seconds >= 6
-                and not health.waiting
-                and health.observed_bitrate >= bitrate * 1.5
-            )
             now = time.monotonic()
-            if not enough or now - session.get("upgrade_last_sample", now) > 10:
-                session["upgrade_since"] = None
-            session["upgrade_last_sample"] = now
-            if enough and session.get("upgrade_since") is None:
-                session["upgrade_since"] = now
-            if enough and now - session["upgrade_since"] >= 6:
+            upgrade = session.setdefault("upgrade_policy", UpgradePolicy())
+            caught_up = bitrate > 0 and aligned(session["dir"])
+            was_high = session.get("high_selected", False)
+            if upgrade.observe(health, bitrate, caught_up, now):
                 session["high_selected"] = True
-            if saver or not bitrate:
+            # A temporary gap in segment publication is not a quality downgrade.
+            # Existing playback health handles sustained stalls after promotion.
+            if saver or not high_alive:
                 session["high_selected"] = False
             if saver and high_alive:
                 _kill_process(session["high_process"])
             name = "high.m3u8" if session.get("high_selected") else "low.m3u8"
+            if now - session.get("upgrade_log_at", float("-inf")) >= 10 or was_high != session.get(
+                "high_selected", False
+            ):
+                reason = "bandwidth saver latched" if saver else upgrade.reason
+                log.info(
+                    "Playback quality %s: selected=%s reason=%s buffer=%.1fs waiting=%s "
+                    "observed=%.2fMbps high=%.2fMbps aligned=%s samples=%d",
+                    session_id,
+                    name,
+                    reason,
+                    health.buffer_seconds,
+                    health.waiting,
+                    health.observed_bitrate / 1e6,
+                    bitrate / 1e6,
+                    caught_up,
+                    len(upgrade.samples),
+                )
+                session["upgrade_log_at"] = now
             result["playlist"] = f"/transcode/{session_id}/{name}"
         return result
 

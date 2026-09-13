@@ -29,9 +29,12 @@ ID, then confirm that session has stopped before starting the next provider feed
 Cancelled startup requests therefore cannot leave a second provider reader behind.
 
 An upgrade requires fresh high-quality segments caught up to the low rendition,
-at least six seconds of player buffer, and six seconds of download samples with
-50% headroom over the largest recent high-quality segment bitrate. Unavailable
-throughput leaves playback at 720p. Shared MPEG-TS timestamps produce matching
+at least six seconds of player buffer, and three download measurements spanning
+at least six seconds with 50% headroom over the largest recent high-quality
+segment bitrate. Measurements expire after ten seconds; polls with no download
+do not erase recent evidence. Encoder readiness is checked when switching rather
+than requiring continuous alignment throughout each source delivery burst.
+Unavailable throughput leaves playback at 720p. Shared MPEG-TS timestamps produce matching
 playlist dates; the app prepares the replacement while playback continues and
 seeks to the current broadcast time before switching. A brief buffering pause is
 still possible. A failed high-quality encoder leaves 720p available.
@@ -62,6 +65,8 @@ on the server. Confirm startup at 720p, upgrade on a healthy connection, continu
 720p while the high encoder is unavailable, and cleanup of all three processes
 when playback stops. The backend fast-start path is opt-in through
 `/transcode/start?fast_start=true`; older clients retain their existing behavior.
+The service logs `Playback quality` every ten seconds, including the decision
+reason, buffer, measured throughput, high-quality bitrate, and alignment state.
 
 The cancellation/rapid-tuning regression check uses a fake transport with the real
 app model. On a Mac, compile and run it with:

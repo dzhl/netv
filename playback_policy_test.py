@@ -4,7 +4,7 @@ from pydantic import ValidationError
 
 import pytest
 
-from playback_policy import PlaybackHealth, PlaybackPolicy
+from playback_policy import PlaybackHealth, PlaybackPolicy, UpgradePolicy
 
 
 def health(*, buffer=0, waiting=True, observed=0, required=0):
@@ -71,3 +71,45 @@ def test_invalid_metrics_rejected(value):
         health(buffer=value)
     with pytest.raises(ValidationError):
         health(observed=value)
+
+
+def test_upgrade_survives_idle_download_polls_and_encoder_batches():
+    policy = UpgradePolicy()
+    # A 10-second source batch makes the encoder temporarily trail the low
+    # rendition. Network samples still establish capacity during that time.
+    for now in range(0, 8, 2):
+        sample = health(buffer=8, waiting=False, observed=100_000_000 if now % 4 == 0 else 0)
+        assert not policy.observe(sample, 60_000_000, ready=False, now=now)
+    assert policy.observe(
+        health(buffer=8, waiting=False, observed=100_000_000), 60_000_000, ready=True, now=8
+    )
+
+
+@pytest.mark.parametrize("observed", [0, 50_000_000])
+def test_upgrade_does_not_invent_bandwidth(observed):
+    policy = UpgradePolicy()
+    for now in range(0, 30, 2):
+        assert not policy.observe(
+            health(buffer=12, waiting=False, observed=observed), 60_000_000, ready=True, now=now
+        )
+
+
+def test_upgrade_expires_old_samples_and_resets_on_stall():
+    policy = UpgradePolicy()
+    good = health(buffer=10, waiting=False, observed=100_000_000)
+    for now in (0, 4, 8):
+        policy.observe(good, 60_000_000, ready=False, now=now)
+    assert not policy.observe(health(buffer=10, waiting=False), 60_000_000, ready=True, now=20)
+    for now in (22, 26, 30):
+        policy.observe(good, 60_000_000, ready=False, now=now)
+    assert not policy.observe(health(), 60_000_000, ready=True, now=31)
+    assert not policy.observe(good, 60_000_000, ready=True, now=32)
+
+
+def test_upgrade_keeps_final_readiness_and_buffer_requirements():
+    policy = UpgradePolicy()
+    good = health(buffer=8, waiting=False, observed=100_000_000)
+    for now in (0, 4, 8):
+        assert not policy.observe(good, 60_000_000, ready=False, now=now)
+    assert not policy.observe(health(buffer=4, waiting=False), 60_000_000, ready=True, now=9)
+    assert policy.observe(health(buffer=8, waiting=False), 60_000_000, ready=True, now=10)

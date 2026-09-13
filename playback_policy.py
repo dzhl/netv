@@ -1,6 +1,6 @@
 """Conservative, one-way quality fallback for live playback."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel, Field
 
@@ -42,3 +42,41 @@ class PlaybackPolicy:
         elif now - self.unhealthy_since >= 8:
             self.bandwidth_saver = True
         return self.bandwidth_saver
+
+
+@dataclass
+class UpgradePolicy:
+    """Keep recent capacity evidence across HLS download and encoder batching gaps."""
+
+    samples: list[tuple[float, float]] = field(default_factory=list)
+    reason: str = "waiting for throughput"
+
+    def observe(
+        self, health: PlaybackHealth, target_bitrate: float, ready: bool, now: float
+    ) -> bool:
+        self.samples = [(at, rate) for at, rate in self.samples if now - at <= 10]
+        if health.waiting or health.buffer_seconds < 3:
+            self.samples.clear()
+            self.reason = "playback pressure"
+            return False
+        # Zero means no transfer measurement, not zero available bandwidth.
+        if health.observed_bitrate > 0:
+            if target_bitrate > 0 and health.observed_bitrate < target_bitrate * 1.5:
+                self.samples.clear()
+                self.reason = "insufficient bandwidth headroom"
+                return False
+            self.samples.append((now, health.observed_bitrate))
+        if target_bitrate <= 0:
+            self.reason = "4K segments unavailable"
+        elif any(rate < target_bitrate * 1.5 for _, rate in self.samples):
+            self.reason = "insufficient bandwidth headroom"
+        elif len(self.samples) < 3 or self.samples[-1][0] - self.samples[0][0] < 6:
+            self.reason = "waiting for throughput evidence"
+        elif health.buffer_seconds < 6:
+            self.reason = "building playback buffer"
+        elif not ready:
+            self.reason = "high-quality encoder catching up"
+        else:
+            self.reason = "ready"
+            return True
+        return False

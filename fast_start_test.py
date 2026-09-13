@@ -105,6 +105,10 @@ def test_upgrade_requires_sustained_headroom_and_fallback_latches(tmp_path):
         assert ffmpeg_session.report_playback_health("fast", "u", good)["playlist"].endswith(
             "/high.m3u8"
         )
+        with patch("ffmpeg_session.ready_bitrate", return_value=0):
+            assert ffmpeg_session.report_playback_health("fast", "u", good)["playlist"].endswith(
+                "/high.m3u8"
+            )
         session["playback_policy"].bandwidth_saver = True
         clock.return_value = 16
         result = ffmpeg_session.report_playback_health("fast", "u", good)
