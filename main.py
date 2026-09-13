@@ -77,6 +77,7 @@ from cache import (
     update_source_epg_url,
 )
 from epg import fetch_epg
+from fast_start import dated_playlist
 from m3u import (
     fetch_m3u,
     fetch_source_live_data,
@@ -1802,6 +1803,7 @@ async def transcode_start(
     deinterlace_fallback: str = "1",  # "1" or "0"
     source_id: str = "",
     bandwidth_saver: bool = False,
+    fast_start: bool = False,
 ):
     """Start a transcode session, return session ID."""
     deinterlace_fb = deinterlace_fallback == "1"
@@ -1833,6 +1835,7 @@ async def transcode_start(
         user_max_streams,
         source_max_streams,
         bandwidth_saver=bandwidth_saver,
+        fast_start=fast_start,
     )
 
 
@@ -1897,6 +1900,8 @@ async def transcode_file(
     cors = {"Access-Control-Allow-Origin": "*"}
     if filename.endswith(".m3u8"):
         content = file_path.read_text()
+        if session.get("fast_start") and session.get("origin_pts") is not None:
+            content = dated_playlist(session["dir"], content, session["origin_pts"], session["origin_time"])
         return Response(
             content=content,
             media_type="application/vnd.apple.mpegurl",

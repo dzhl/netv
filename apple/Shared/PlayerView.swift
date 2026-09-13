@@ -88,11 +88,9 @@ struct PlayerView: View {
             #if os(iOS)
             try configureAudioSession()
             #endif
-            var bandwidthSaver = false
             while !Task.isCancelled {
-                let configuration = try await model.playerConfiguration(
-                    for: selection, bandwidthSaver: bandwidthSaver
-                )
+                let bandwidthSaver = model.bandwidthSaver
+                var configuration = try await model.playerConfiguration(for: selection)
                 activeSessionID = configuration.transcodeSessionID
                 try Task.checkCancellation()
                 var options: [String: Any] = [:]
@@ -104,8 +102,8 @@ struct PlayerView: View {
                     throw APIError.server("This channel's stream is not compatible with AVPlayer.")
                 }
                 try Task.checkCancellation()
-                let item = AVPlayerItem(asset: asset)
-                let currentPlayer = AVPlayer(playerItem: item)
+                var item = AVPlayerItem(asset: asset)
+                var currentPlayer = AVPlayer(playerItem: item)
                 currentPlayer.isMuted = false
                 currentPlayer.volume = 1
                 player = currentPlayer
@@ -120,10 +118,31 @@ struct PlayerView: View {
                     // server's consecutive-poor-playback window and keeps it alive.
                     let health = sampler.sample(player: currentPlayer, item: item)
                     do {
-                        let reduceQuality = try await model.reportPlaybackHealth(
+                        let feedback = try await model.reportPlaybackHealth(
                             sessionID: sessionID, health: health
                         )
-                        if reduceQuality && !bandwidthSaver {
+                        try Task.checkCancellation()
+                        if let playlist = feedback.playlist,
+                           let url = URL(string: playlist, relativeTo: configuration.url)?.absoluteURL,
+                           url != configuration.url {
+                            // Prepare locally while the current rendition keeps playing.
+                            let replacement = try await prepareQualityPlayer(
+                                url: url, options: options, currentItem: item
+                            )
+                            try Task.checkCancellation()
+                            currentPlayer.pause()
+                            currentPlayer = replacement
+                            item = replacement.currentItem!
+                            player = replacement
+                            replacement.play()
+                            configuration = PlaybackConfiguration(
+                                url: url, cookieHeader: configuration.cookieHeader,
+                                transcodeSessionID: sessionID
+                            )
+                            sampler = PlaybackHealthSampler()
+                            continue
+                        }
+                        if feedback.playlist == nil && feedback.bandwidthSaver && !bandwidthSaver {
                             shouldRetune = true
                             break
                         }
@@ -134,7 +153,7 @@ struct PlayerView: View {
                     }
                 }
                 if shouldRetune {
-                    logger.info("Retuning without upscaling after sustained playback pressure")
+                    logger.info("Switching playback quality")
                     currentPlayer.pause()
                     player = nil
                     quality = nil
@@ -142,7 +161,6 @@ struct PlayerView: View {
                         await model.stopPlayback(sessionID: sessionID)
                         activeSessionID = nil
                     }
-                    bandwidthSaver = true
                 }
             }
         } catch {
@@ -151,6 +169,35 @@ struct PlayerView: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    @MainActor
+    private func prepareQualityPlayer(
+        url: URL, options: [String: Any], currentItem: AVPlayerItem
+    ) async throws -> AVPlayer {
+        let item = AVPlayerItem(asset: AVURLAsset(url: url, options: options))
+        let candidate = AVPlayer(playerItem: item)
+        let deadline = Date().addingTimeInterval(8)
+        while item.status == .unknown && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        guard item.status == .readyToPlay else {
+            throw APIError.server("The new quality is not ready yet.")
+        }
+        // Both playlists expose dates derived from the same provider timestamps.
+        // Refuse an upgrade without a shared timeline rather than jumping live.
+        guard let date = currentItem.currentDate() else {
+            throw APIError.server("Waiting for the shared playback timeline.")
+        }
+        let sought = await withCheckedContinuation { continuation in
+            item.seek(to: date) { success in
+                continuation.resume(returning: success)
+            }
+        }
+        guard sought else {
+            throw APIError.server("The new quality has not caught up yet.")
+        }
+        return candidate
     }
 
     #if os(iOS)

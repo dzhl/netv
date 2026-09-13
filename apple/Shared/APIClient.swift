@@ -165,7 +165,7 @@ final class APIClient {
         _ = try? await data(for: request, operation: "stop transcode")
     }
 
-    func reportPlaybackHealth(server: String, sessionID: String, health: PlaybackHealth) async throws -> Bool {
+    func reportPlaybackHealth(server: String, sessionID: String, health: PlaybackHealth) async throws -> PlaybackHealthResponse {
         guard let baseURL = normalizedServerURL(server) else { throw APIError.invalidServer }
         let url = baseURL.appendingPathComponent("transcode/\(sessionID)/health")
         var request = URLRequest(url: url)
@@ -177,7 +177,7 @@ final class APIClient {
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw APIError.invalidResponse
         }
-        return try decoder.decode(PlaybackHealthResponse.self, from: data).bandwidthSaver
+        return try decoder.decode(PlaybackHealthResponse.self, from: data)
     }
 
     private func get<T: Decodable>(_ path: String, baseURL: URL) async throws -> T {
@@ -218,7 +218,8 @@ final class APIClient {
             URLQueryItem(name: "content_type", value: "live"),
             URLQueryItem(name: "deinterlace_fallback", value: deinterlaceFallback ? "1" : "0"),
             URLQueryItem(name: "source_id", value: sourceID),
-            URLQueryItem(name: "bandwidth_saver", value: bandwidthSaver ? "true" : "false")
+            URLQueryItem(name: "bandwidth_saver", value: bandwidthSaver ? "true" : "false"),
+            URLQueryItem(name: "fast_start", value: "true")
         ]
         guard let url = components?.url else { throw APIError.invalidServer }
         let response: TranscodeResponse = try await get(url: url)
@@ -336,10 +337,12 @@ struct PlaybackHealth: Encodable {
     }
 }
 
-private struct PlaybackHealthResponse: Decodable {
+struct PlaybackHealthResponse: Decodable {
     let bandwidthSaver: Bool
+    let playlist: String?
 
     enum CodingKeys: String, CodingKey {
         case bandwidthSaver = "bandwidth_saver"
+        case playlist
     }
 }

@@ -12,6 +12,9 @@ final class AppModel: ObservableObject {
     @Published var selection: PlayerSelection?
     @Published var isPlayerExpanded = false
 
+    // Keep the downgrade across player recreation and channel changes for this app run.
+    private(set) var bandwidthSaver = false
+
     @Published var server: String {
         didSet { UserDefaults.standard.set(server, forKey: "server") }
     }
@@ -75,12 +78,16 @@ final class AppModel: ObservableObject {
         selection = PlayerSelection(channel: row.channel, program: row.currentProgram)
     }
 
-    func playerConfiguration(for selection: PlayerSelection, bandwidthSaver: Bool = false) async throws -> PlaybackConfiguration {
+    func playerConfiguration(for selection: PlayerSelection) async throws -> PlaybackConfiguration {
         try await client.playbackConfiguration(server: server, channelID: selection.channel.id, bandwidthSaver: bandwidthSaver)
     }
 
-    func reportPlaybackHealth(sessionID: String, health: PlaybackHealth) async throws -> Bool {
-        try await client.reportPlaybackHealth(server: server, sessionID: sessionID, health: health)
+    func reportPlaybackHealth(sessionID: String, health: PlaybackHealth) async throws -> PlaybackHealthResponse {
+        let response = try await client.reportPlaybackHealth(server: server, sessionID: sessionID, health: health)
+        // Latch before the player awaits encoder cleanup, so switching channels
+        // during a retune cannot start another high-quality stream.
+        bandwidthSaver = bandwidthSaver || response.bandwidthSaver
+        return response
     }
 
     func stopPlayback(sessionID: String) async {

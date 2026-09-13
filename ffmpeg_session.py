@@ -19,6 +19,7 @@ import uuid
 
 from fastapi import HTTPException
 
+from fast_start import aligned, encoder_command, ingest_command, ready_bitrate, segment_pts
 from ffmpeg_command import (
     SEG_PREFIX,
     HwAccel,
@@ -169,6 +170,8 @@ def stop_session(session_id: str, force: bool = False) -> None:
 
         if _kill_process(session["process"]):
             log.info("Killed ffmpeg for session %s", session_id)
+        for proc in session.get("extra_processes", []):
+            _kill_process(proc)
 
         # Cache session if timeout > 0
         is_vod = session.get("is_vod", False)
@@ -208,6 +211,8 @@ def shutdown() -> None:
     """Kill all running ffmpeg processes for clean shutdown."""
     with _transcode_lock:
         for session_id, session in list(_transcode_sessions.items()):
+            for extra in session.get("extra_processes", []):
+                _kill_process(extra)
             proc = session.get("process")
             if proc and _kill_process(proc):
                 log.info("Shutdown: killed ffmpeg for session %s", session_id)
@@ -1002,6 +1007,7 @@ async def start_transcode(
     user_max_streams: int = 0,
     source_max_streams: int = 0,
     bandwidth_saver: bool = False,
+    fast_start: bool = False,
 ) -> dict[str, Any]:
     """Start or reuse a transcode session."""
     if bandwidth_saver and content_type != "live":
@@ -1025,6 +1031,18 @@ async def start_transcode(
 
     # Try to reuse existing valid session
     if existing_id and is_valid:
+        existing = get_session(existing_id)
+        if existing and existing.get("fast_start"):
+            if existing.get("username") != username:
+                raise HTTPException(404, "Session not found")
+            touch_session(existing_id)
+            return {
+                "session_id": existing_id,
+                "playlist": f"/transcode/{existing_id}/low.m3u8",
+                "subtitles": [],
+                "duration": 0,
+                "seek_offset": 0,
+            }
         log.info("Found valid existing session %s (vod=%s)", existing_id, is_vod)
         result = await _try_reuse_session(existing_id, url, is_vod, content_type)
         if result:
@@ -1034,6 +1052,14 @@ async def start_transcode(
     if existing_id:
         log.info("Cleaning up invalid session %s", existing_id)
         _cleanup_invalid_session(url, existing_id)
+
+    if (
+        fast_start
+        and not bandwidth_saver
+        and content_type == "live"
+        and get_settings().get("max_resolution", "1080p") in ("1080p", "1440p", "4k")
+    ):
+        return await _start_fast_live(url, username, source_id, deinterlace_fallback)
 
     # Start fresh transcode (with retry for series probe cache staleness)
     try:
@@ -1311,7 +1337,9 @@ async def seek_transcode(session_id: str, seek_time: float) -> dict[str, Any]:
     }
 
 
-def report_playback_health(session_id: str, username: str, health: PlaybackHealth) -> dict[str, bool]:
+def report_playback_health(
+    session_id: str, username: str, health: PlaybackHealth
+) -> dict[str, Any]:
     """Evaluate playback pressure for the current live stream."""
     with _transcode_lock:
         session = _transcode_sessions.get(session_id)
@@ -1321,4 +1349,122 @@ def report_playback_health(session_id: str, username: str, health: PlaybackHealt
             raise HTTPException(400, "Playback feedback is only supported for live streams")
         session["last_access"] = time.time()
         downgrade = session["playback_policy"].observe(health, time.monotonic())
-        return {"bandwidth_saver": bool(downgrade or session.get("bandwidth_saver"))}
+        saver = bool(downgrade or session.get("bandwidth_saver"))
+        result: dict[str, Any] = {"bandwidth_saver": saver}
+        if session.get("fast_start"):
+            high_alive = _is_process_alive(session.get("high_process"))
+            bitrate = ready_bitrate(session["dir"], "high.m3u8") if high_alive else 0
+            enough = (
+                bitrate > 0
+                and aligned(session["dir"])
+                and health.buffer_seconds >= 6
+                and not health.waiting
+                and health.observed_bitrate >= bitrate * 1.5
+            )
+            now = time.monotonic()
+            if not enough or now - session.get("upgrade_last_sample", now) > 10:
+                session["upgrade_since"] = None
+            session["upgrade_last_sample"] = now
+            if enough and session.get("upgrade_since") is None:
+                session["upgrade_since"] = now
+            if enough and now - session["upgrade_since"] >= 6:
+                session["high_selected"] = True
+            if saver or not bitrate:
+                session["high_selected"] = False
+            if saver and high_alive:
+                _kill_process(session["high_process"])
+            name = "high.m3u8" if session.get("high_selected") else "low.m3u8"
+            result["playlist"] = f"/transcode/{session_id}/{name}"
+        return result
+
+
+async def _start_fast_live(
+    url: str, username: str, source_id: str, deinterlace: bool
+) -> dict[str, Any]:
+    """One provider reader, two independent encoders, one session/stream slot."""
+    settings = get_settings()
+    session_id = str(uuid.uuid4())
+    directory = tempfile.mkdtemp(prefix=f"netv_transcode_{session_id}_", dir=get_transcode_dir())
+    processes: list[asyncio.subprocess.Process] = []
+
+    async def launch(cmd: list[str]) -> asyncio.subprocess.Process:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            env=get_ffmpeg_env(),
+        )
+        processes.append(proc)
+        _spawn_background_task(_monitor_ffmpeg_stderr(proc, session_id, []))
+        return proc
+
+    async def wait_ready(name: str, proc: asyncio.subprocess.Process) -> None:
+        deadline = time.monotonic() + _PLAYLIST_WAIT_TIMEOUT_SEC
+        while time.monotonic() < deadline and proc.returncode is None:
+            if ready_bitrate(directory, name):
+                return
+            await asyncio.sleep(_POLL_INTERVAL_SEC)
+        raise HTTPException(500, "Fast-start stream failed to become ready")
+
+    try:
+        ingest = await launch(ingest_command(url, directory, get_user_agent()))
+        with _transcode_lock:
+            _transcode_sessions[session_id] = {
+                "dir": directory,
+                "process": ingest,
+                "extra_processes": [],
+                "started": time.time(),
+                "last_access": time.time(),
+                "url": url,
+                "is_vod": False,
+                "username": username,
+                "source_id": source_id,
+                "bandwidth_saver": False,
+                "playback_policy": PlaybackPolicy(),
+                "fast_start": True,
+                "subtitles": [],
+                "duration": 0,
+                "seek_offset": 0,
+            }
+            _url_to_session[url] = session_id
+        await wait_ready("input.m3u8", ingest)
+        first_input = min(pathlib.Path(directory).glob("input_*.ts"))
+        origin_pts = segment_pts(first_input)
+        with _transcode_lock:
+            _transcode_sessions[session_id].update(origin_pts=origin_pts, origin_time=time.time())
+        hw = settings.get("transcode_hw", "software")
+        low = await launch(encoder_command(directory, hw, "720p", "low", deinterlace, False))
+        with _transcode_lock:
+            _transcode_sessions[session_id].update(process=low, extra_processes=[ingest])
+        try:
+            high = await launch(
+                encoder_command(
+                    directory,
+                    hw,
+                    settings.get("max_resolution", "1080p"),
+                    settings.get("quality", "high"),
+                    deinterlace,
+                    True,
+                )
+            )
+            with _transcode_lock:
+                _transcode_sessions[session_id].update(
+                    high_process=high, extra_processes=[ingest, high]
+                )
+        except OSError:
+            log.exception("High-quality encoder unavailable; continuing at 720p")
+        await wait_ready("low.m3u8", low)
+        return {
+            "session_id": session_id,
+            "playlist": f"/transcode/{session_id}/low.m3u8",
+            "subtitles": [],
+            "duration": 0,
+            "seek_offset": 0,
+        }
+    except BaseException:
+        for proc in processes:
+            _kill_process(proc)
+        stop_session(session_id, force=True)
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
