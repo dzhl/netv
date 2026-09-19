@@ -415,14 +415,30 @@
   // position instead of jumping to the live edge.
   function setupLiveDvrResume() {
     if (cfg.isVod || !cfg.liveDvrMins) return;
+
+    // MSE reports seekable as [0, duration] for live streams, so the
+    // retained window must come from the active playlist's first
+    // fragment. Native HLS (Safari) reports the real window in seekable.
+    function windowStart() {
+      if (currentHls) {
+        const levels = currentHls.levels || [];
+        const level = levels[currentHls.currentLevel] || levels[currentHls.loadLevel] || levels[0];
+        const fragments = level && level.details && level.details.fragments;
+        if (fragments && fragments.length && Number.isFinite(fragments[0].start)) {
+          return fragments[0].start;
+        }
+        return null;
+      }
+      return video.seekable.length ? video.seekable.start(0) : null;
+    }
+
     let pausedDuringSession = false;
     video.addEventListener('pause', () => { pausedDuringSession = true; });
     video.addEventListener('play', () => {
-      if (!pausedDuringSession || !video.seekable.length) return;
-      const windowStart = video.seekable.start(0);
-      if (video.currentTime < windowStart) {
-        video.currentTime = windowStart + 0.1;
-      }
+      if (!pausedDuringSession) return;
+      const start = windowStart();
+      if (start === null || video.currentTime >= start) return;
+      video.currentTime = start + 0.1;
     });
   }
 

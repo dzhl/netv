@@ -17,6 +17,7 @@ from ffmpeg_command import (
     _build_video_args,
     _get_gpu_nvdec_codecs,
     build_hls_ffmpeg_cmd,
+    can_remux_live,
     clear_all_probe_cache,
     clear_series_mru,
     get_live_hls_list_size,
@@ -500,6 +501,19 @@ class TestBuildHlsFfmpegCmd:
             max_resolution="1080p",
         )
         assert cmd[cmd.index("-c:v") + 1] != "copy"
+
+    def test_can_remux_live_compatible_source(self):
+        """Test a browser-compatible progressive H.264/AAC source can remux."""
+        assert can_remux_live(FakeMediaInfo(), "1080p")  # type: ignore[arg-type]
+
+    def test_can_remux_live_rejects_unplayable_sources(self):
+        """Test remux is rejected for missing info or incompatible sources."""
+        assert not can_remux_live(None, "1080p")
+        assert not can_remux_live(FakeMediaInfo(video_codec="hevc"), "1080p")  # type: ignore[arg-type]
+        assert not can_remux_live(FakeMediaInfo(interlaced=True), "1080p")  # type: ignore[arg-type]
+        assert not can_remux_live(FakeMediaInfo(height=2160), "1080p")  # type: ignore[arg-type]
+        assert not can_remux_live(FakeMediaInfo(audio_codec="ac3"), "1080p")  # type: ignore[arg-type]
+        assert not can_remux_live(FakeMediaInfo(audio_profile="HE-AAC"), "1080p")  # type: ignore[arg-type]
 
     def test_user_agent(self):
         """Test user agent is included when provided."""

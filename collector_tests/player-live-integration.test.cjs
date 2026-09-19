@@ -61,6 +61,7 @@ async function player({ isVod = false, native = false, direct = false } = {}) {
   const errors = [];
   let sessionNumber = 0;
   let rendition = 'low';
+  let windowStart = 0;
   const engines = [];
   class Hls {
     static Events = {
@@ -74,6 +75,8 @@ async function player({ isVod = false, native = false, direct = false } = {}) {
       this.handlers = new Map();
       this.subtitleTracks = [];
       this.levels = [];
+      this.currentLevel = -1;
+      this.loadLevel = -1;
       this.sources = [];
       engines.push(this);
     }
@@ -93,7 +96,10 @@ async function player({ isVod = false, native = false, direct = false } = {}) {
       if (url.endsWith('/master.m3u8')) {
         this.levels = ['low', 'high'].map(name => ({
           uri: 'http://netv.test' + url.replace('master.m3u8', `${name}.m3u8`),
+          details: { get fragments() { return [{ start: windowStart }]; } },
         }));
+        this.currentLevel = 0;
+        this.loadLevel = 0;
       }
     }
     attachMedia() { this.emit('manifest'); }
@@ -144,6 +150,7 @@ async function player({ isVod = false, native = false, direct = false } = {}) {
   return {
     video, window, elements, engines, calls, beacons, errors, timers,
     setRendition: value => { rendition = value; },
+    setWindowStart: value => { windowStart = value; },
     async pollHealth() {
       const [id, timer] = [...timers].find(([, timer]) => timer.ms === 2000);
       timers.delete(id);
@@ -229,7 +236,7 @@ test('live DVR resumes at the oldest available position when the pause expired',
   const p = await player();
   await p.video.emit('pause');
   p.video.currentTime = 120;
-  p.video.seekable.start = () => 300;
+  p.setWindowStart(300);
   await p.video.emit('play');
   assert.equal(p.video.currentTime, 300.1);
   assert.deepEqual(p.errors, []);
@@ -239,7 +246,7 @@ test('live DVR keeps the paused position when still within the window', async ()
   const p = await player();
   await p.video.emit('pause');
   p.video.currentTime = 350;
-  p.video.seekable.start = () => 300;
+  p.setWindowStart(300);
   await p.video.emit('play');
   assert.equal(p.video.currentTime, 350);
   assert.deepEqual(p.errors, []);
@@ -248,8 +255,18 @@ test('live DVR keeps the paused position when still within the window', async ()
 test('live playback before any pause does not seek to the window start', async () => {
   const p = await player();
   p.video.currentTime = 0;
-  p.video.seekable.start = () => 300;
+  p.setWindowStart(300);
   await p.video.emit('play');
   assert.equal(p.video.currentTime, 0);
+  assert.deepEqual(p.errors, []);
+});
+
+test('native HLS DVR resumes at the oldest available position when the pause expired', async () => {
+  const p = await player({ native: true });
+  await p.video.emit('pause');
+  p.video.currentTime = 120;
+  p.video.seekable.start = () => 300;
+  await p.video.emit('play');
+  assert.equal(p.video.currentTime, 300.1);
   assert.deepEqual(p.errors, []);
 });

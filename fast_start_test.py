@@ -1,6 +1,6 @@
 """Fast start must keep one upstream reader and survive a failed high encoder."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncio
 import os
@@ -10,7 +10,7 @@ import subprocess
 
 import pytest
 
-from ffmpeg_command import HwAccel
+from ffmpeg_command import HwAccel, MediaInfo
 from ffmpeg_session_test import FakeProcess
 from playback_policy import PlaybackHealth, PlaybackPolicy
 
@@ -319,6 +319,102 @@ async def test_low_startup_failure_never_launches_high(tmp_path, cancelled):
         assert launch.call_count == 2
         assert all(proc.returncode is not None for proc in processes)
         assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_dvr_compatible_source_remuxes_without_fast_start():
+    """A DVR request for a copy-compatible source must not spawn encoders."""
+    media = MediaInfo(
+        video_codec="h264",
+        audio_codec="aac",
+        pix_fmt="yuv420p",
+        audio_channels=2,
+        audio_sample_rate=48000,
+        audio_profile="LC",
+        height=1080,
+    )
+    remux = {"session_id": "remux", "playlist": "/transcode/remux/stream.m3u8"}
+    with (
+        patch(
+            "ffmpeg_session.get_settings",
+            return_value={"max_resolution": "4k", "live_dvr_mins": 60, "probe_live": True},
+        ),
+        patch("ffmpeg_session.resolve_hls_master_playlist", return_value="https://provider/live"),
+        patch("ffmpeg_session.probe_media", return_value=(media, [])),
+        patch("ffmpeg_session._do_start_transcode", new=AsyncMock(return_value=remux)) as do_start,
+        patch("ffmpeg_session._start_fast_live", new=AsyncMock()) as fast_live,
+    ):
+        result = await ffmpeg_session.start_transcode("https://provider/live", fast_start=True)
+    assert result == remux
+    assert do_start.await_count == 1
+    assert fast_live.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("media", "bandwidth_saver"),
+    [
+        (
+            MediaInfo(
+                video_codec="hevc",
+                audio_codec="aac",
+                pix_fmt="yuv420p",
+                audio_channels=2,
+                audio_sample_rate=48000,
+                audio_profile="LC",
+                height=1080,
+            ),
+            False,
+        ),
+        (
+            MediaInfo(
+                video_codec="h264",
+                audio_codec="aac",
+                pix_fmt="yuv420p",
+                audio_channels=2,
+                audio_sample_rate=48000,
+                audio_profile="LC",
+                height=1080,
+            ),
+            True,
+        ),
+    ],
+)
+async def test_dvr_keeps_fast_start_when_remux_is_unavailable(media, bandwidth_saver):
+    """Incompatible sources and bandwidth-saver requests keep fast start."""
+    fast = {"session_id": "fast", "playlist": "/transcode/fast/low.m3u8"}
+    with (
+        patch(
+            "ffmpeg_session.get_settings",
+            return_value={"max_resolution": "4k", "live_dvr_mins": 60, "probe_live": True},
+        ),
+        patch("ffmpeg_session.resolve_hls_master_playlist", return_value="https://provider/live"),
+        patch("ffmpeg_session.probe_media", return_value=(media, [])),
+        patch("ffmpeg_session._start_fast_live", new=AsyncMock(return_value=fast)) as fast_live,
+    ):
+        result = await ffmpeg_session.start_transcode(
+            "https://provider/live", fast_start=True, bandwidth_saver=bandwidth_saver
+        )
+    assert result == fast
+    assert fast_live.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_dvr_disabled_skips_probe_and_uses_fast_start():
+    """Without DVR the fast-start path must not pay a probe round trip."""
+    fast = {"session_id": "fast", "playlist": "/transcode/fast/low.m3u8"}
+    with (
+        patch(
+            "ffmpeg_session.get_settings",
+            return_value={"max_resolution": "4k", "live_dvr_mins": 0, "probe_live": True},
+        ),
+        patch("ffmpeg_session.probe_media", new=MagicMock()) as probe,
+        patch("ffmpeg_session._start_fast_live", new=AsyncMock(return_value=fast)) as fast_live,
+    ):
+        result = await ffmpeg_session.start_transcode("https://provider/live", fast_start=True)
+    assert result == fast
+    assert fast_live.await_count == 1
+    assert probe.call_count == 0
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="requires FFmpeg")
