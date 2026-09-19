@@ -1,4 +1,4 @@
-"""Conservative, one-way quality fallback for live playback."""
+"""Conservative quality fallback and sustained recovery for live playback."""
 
 from dataclasses import dataclass, field
 
@@ -19,9 +19,58 @@ class PlaybackPolicy:
     last_sample: float | None = None
     unhealthy_since: float | None = None
     bandwidth_saver: bool = False
+    saver_since: float | None = None
+    recovery_since: float | None = None
+    recovery_last_transfer: float | None = None
+    recovery_samples: int = 0
 
-    def observe(self, health: PlaybackHealth, now: float) -> bool:
+    def observe(
+        self,
+        health: PlaybackHealth,
+        now: float,
+        recovery_bitrate: float = 0,
+        *,
+        recovery_ready: bool = True,
+    ) -> bool:
         if self.bandwidth_saver:
+            if self.saver_since is None:
+                self.saver_since = now
+            gap = self.last_sample is not None and now - self.last_sample > 10
+            self.last_sample = now
+            healthy = not health.waiting and health.buffer_seconds >= 8 and recovery_bitrate > 0
+            if health.observed_bitrate > 0 and health.observed_bitrate < recovery_bitrate * 1.5:
+                healthy = False
+            if (
+                gap
+                or not healthy
+                or (
+                    self.recovery_last_transfer is not None
+                    and now - self.recovery_last_transfer > 10
+                )
+            ):
+                self.recovery_since = None
+                self.recovery_last_transfer = None
+                self.recovery_samples = 0
+            if healthy and health.observed_bitrate > 0:
+                if self.recovery_since is None:
+                    self.recovery_since = now
+                self.recovery_last_transfer = now
+                self.recovery_samples += 1
+            if (
+                now - self.saver_since >= 60
+                and self.recovery_since is not None
+                and now - self.recovery_since >= 30
+                and self.recovery_samples >= 3
+                and recovery_ready
+            ):
+                self.bandwidth_saver = False
+                self.saver_since = None
+                self.recovery_since = None
+                self.recovery_last_transfer = None
+                self.recovery_samples = 0
+                self.unhealthy_since = None
+                self.started = now
+                return False
             return True
         if self.started is None:
             self.started = now
@@ -41,6 +90,7 @@ class PlaybackPolicy:
             self.unhealthy_since = now
         elif now - self.unhealthy_since >= 8:
             self.bandwidth_saver = True
+            self.saver_since = now
         return self.bandwidth_saver
 
 

@@ -23,7 +23,7 @@ final class AppModel: ObservableObject {
     @Published var playPauseRequest: UUID?
     #endif
 
-    // Keep the downgrade across player recreation and channel changes for this app run.
+    // Carry the server's current quality decision across channel changes.
     private(set) var bandwidthSaver = false
 
     @Published var server: String {
@@ -147,10 +147,13 @@ final class AppModel: ObservableObject {
     }
 
     func reportPlaybackHealth(sessionID: String, health: PlaybackHealth) async throws -> PlaybackHealthResponse {
+        let generation = playbackStartGeneration
         let response = try await client.reportPlaybackHealth(server: server, sessionID: sessionID, health: health)
-        // Latch before the player awaits encoder cleanup, so switching channels
-        // during a retune cannot start another high-quality stream.
-        bandwidthSaver = bandwidthSaver || response.bandwidthSaver
+        // Ignore late feedback from a replaced session. The active server can
+        // both enable saver and clear it after sustained recovery.
+        if playbackStartGeneration == generation, playbackSessionToRelease?.id == sessionID {
+            bandwidthSaver = response.bandwidthSaver
+        }
         return response
     }
 

@@ -7,7 +7,12 @@ struct WatchView: View {
     @EnvironmentObject private var model: AppModel
     #if os(macOS) || os(tvOS)
     @State private var selectedCategoryID: String?
+    #endif
+    #if os(macOS)
     @FocusState private var isExpandButtonFocused: Bool
+    #endif
+    #if os(tvOS)
+    @FocusState private var isPlayerFocused: Bool
     #endif
 
     var body: some View {
@@ -61,7 +66,17 @@ struct WatchView: View {
                 // Keep one player mounted while its frame changes, avoiding a stream retune.
                 ZStack(alignment: .topTrailing) {
                     playerSurface
+                    #if os(tvOS)
+                    // Focus changes can rebuild their subtree. Keep the playback
+                    // task outside that subtree when switching presentation modes.
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .focusable(model.isPlayerExpanded)
+                        .focused($isPlayerFocused)
+                    #endif
+                    #if os(macOS)
                     expandButton
+                    #endif
                 }
                 .frame(
                     width: model.isPlayerExpanded ? proxy.size.width : previewWidth,
@@ -83,7 +98,7 @@ struct WatchView: View {
         }
         #else
         .onChange(of: model.isPlayerExpanded) { _, expanded in
-            isExpandButtonFocused = expanded
+            isPlayerFocused = expanded
         }
         #endif
     }
@@ -179,7 +194,7 @@ struct WatchView: View {
                 .padding(11)
                 .background(.black.opacity(0.62), in: Circle())
             }
-            #if os(macOS) || os(tvOS)
+            #if os(macOS)
             .buttonStyle(GuideButtonStyle(isFocused: isExpandButtonFocused))
             .focused($isExpandButtonFocused)
             #else

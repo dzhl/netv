@@ -146,7 +146,6 @@ struct ChannelGuideView: View {
     @EnvironmentObject private var model: AppModel
     var selectedCategoryID: String? = nil
     @FocusState private var focusedChannelID: String?
-    @State private var lastFocusedChannelID: String?
 
     private var rowHeight: CGFloat { GuideMetrics.scaled(74) }
 
@@ -162,17 +161,7 @@ struct ChannelGuideView: View {
         .background(GuideTheme.background)
         .refreshable { await model.loadGuide() }
         .focusSection()
-        .onChange(of: focusedChannelID) { _, id in
-            if let id { lastFocusedChannelID = id }
-        }
-        #if os(tvOS)
-        .onChange(of: model.isPlayerExpanded) { _, expanded in
-            if !expanded, let lastFocusedChannelID,
-               visibleChannels.contains(where: { $0.id == lastFocusedChannelID }) {
-                focusedChannelID = lastFocusedChannelID
-            }
-        }
-        #endif
+
     }
 
     private var visibleChannels: [ChannelRow] {
@@ -231,35 +220,58 @@ struct ChannelGuideView: View {
             } else {
                 timelineHeader(date: date, channelWidth: channelWidth)
                     .padding(.horizontal, 16)
-                ScrollView {
-                    LazyVStack(spacing: 5) {
-                        ForEach(rows) { row in
-                            Button {
-                                model.play(row)
-                            } label: {
-                                GuideChannelRow(
-                                    row: row,
-                                    channelWidth: channelWidth,
-                                    rowHeight: rowHeight,
-                                    nowPosition: nowPosition(at: date),
-                                    isPlaying: model.selection?.id == row.id
+                ScrollViewReader { scrollProxy in
+                    ScrollView {
+                        LazyVStack(spacing: 5) {
+                            ForEach(rows) { row in
+                                Button {
+                                    #if os(tvOS)
+                                    if model.selection?.id == row.id {
+                                        model.isPlayerExpanded = true
+                                    } else {
+                                        model.play(row)
+                                    }
+                                    #else
+                                    model.play(row)
+                                    #endif
+                                } label: {
+                                    GuideChannelRow(
+                                        row: row,
+                                        channelWidth: channelWidth,
+                                        rowHeight: rowHeight,
+                                        nowPosition: nowPosition(at: date),
+                                        isPlaying: model.selection?.id == row.id
+                                    )
+                                }
+                                .buttonStyle(GuideButtonStyle(
+                                    isSelected: model.selection?.id == row.id,
+                                    isFocused: focusedChannelID == row.id
+                                ))
+                                .id(row.id)
+                                .focused($focusedChannelID, equals: row.id)
+                                .accessibilityLabel("Watch \(row.channel.name)")
+                                .accessibilityValue(
+                                    model.selection?.id == row.id ? "Now playing" : "Not playing"
                                 )
                             }
-                            .buttonStyle(GuideButtonStyle(
-                                isSelected: model.selection?.id == row.id,
-                                isFocused: focusedChannelID == row.id
-                            ))
-                            .focused($focusedChannelID, equals: row.id)
-                            .accessibilityLabel("Watch \(row.channel.name)")
-                            .accessibilityValue(
-                                model.selection?.id == row.id ? "Now playing" : "Not playing"
-                            )
                         }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+                    .id([selectedCategoryID ?? "", model.query])
+                    #if os(tvOS)
+                    .task(id: model.isPlayerExpanded) {
+                        guard !model.isPlayerExpanded,
+                              let id = model.selection?.id,
+                              rows.contains(where: { $0.id == id }) else { return }
+                        scrollProxy.scrollTo(id, anchor: .center)
+                        // Let the guide become enabled and its lazy row mount before focusing it.
+                        await Task.yield()
+                        guard !Task.isCancelled else { return }
+                        focusedChannelID = id
+                    }
+                    #endif
                 }
-                .id([selectedCategoryID ?? "", model.query])
             }
         }
     }

@@ -16,7 +16,7 @@ def health(*, buffer=0, waiting=True, observed=0, required=0):
     )
 
 
-def test_startup_grace_and_sustained_stall_then_latched_fallback():
+def test_startup_grace_and_sustained_stall_then_recovery_cooldown():
     policy = PlaybackPolicy()
     for now in range(0, 24, 2):
         assert not policy.observe(health(), now)
@@ -113,3 +113,65 @@ def test_upgrade_keeps_final_readiness_and_buffer_requirements():
         assert not policy.observe(good, 60_000_000, ready=False, now=now)
     assert not policy.observe(health(buffer=4, waiting=False), 60_000_000, ready=True, now=9)
     assert policy.observe(health(buffer=8, waiting=False), 60_000_000, ready=True, now=10)
+
+
+def test_recovery_requires_cooldown_and_sustained_headroom():
+    policy = PlaybackPolicy(bandwidth_saver=True)
+    good = health(buffer=10, waiting=False, observed=30_000_000)
+    for now in range(0, 60, 2):
+        assert policy.observe(good, now, 20_000_000)
+    assert not policy.observe(good, 60, 20_000_000)
+    # Recovery has its own startup grace; a later sustained stall can fall back.
+    for now in range(62, 84, 2):
+        assert not policy.observe(health(), now, 20_000_000)
+    assert policy.observe(health(), 84, 20_000_000)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        health(buffer=10, waiting=False, observed=29_000_000),
+        health(buffer=7, waiting=False, observed=40_000_000),
+        health(buffer=10, waiting=True, observed=40_000_000),
+        health(buffer=10, waiting=False),
+    ],
+)
+def test_recovery_rejects_insufficient_or_unknown_capacity(bad):
+    policy = PlaybackPolicy(bandwidth_saver=True)
+    for now in range(0, 180, 2):
+        assert policy.observe(bad, now, 20_000_000)
+
+
+def test_recovery_survives_bursty_downloads_but_expires_on_pause():
+    policy = PlaybackPolicy(bandwidth_saver=True)
+    for now in range(0, 60, 2):
+        assert policy.observe(
+            health(buffer=10, waiting=False, observed=40_000_000 if now % 4 == 0 else 0),
+            now,
+            20_000_000,
+        )
+    # No downloads for over ten seconds invalidates earlier evidence.
+    for now in range(60, 74, 2):
+        assert policy.observe(
+            health(buffer=10, waiting=False), now, 20_000_000, recovery_ready=False
+        )
+    good = health(buffer=10, waiting=False, observed=40_000_000)
+    for now in range(74, 104, 2):
+        assert policy.observe(good, now, 20_000_000)
+    assert not policy.observe(good, 104, 20_000_000)
+
+
+def test_recovery_waits_for_encoder_readiness_and_resets_after_telemetry_gap():
+    policy = PlaybackPolicy(bandwidth_saver=True)
+    good = health(buffer=10, waiting=False, observed=40_000_000)
+    for now in range(0, 70, 2):
+        assert policy.observe(good, now, 20_000_000, recovery_ready=False)
+    for now in range(100, 130, 2):
+        assert policy.observe(good, now, 20_000_000)
+    assert not policy.observe(good, 130, 20_000_000)
+
+
+def test_recovery_needs_known_target():
+    policy = PlaybackPolicy(bandwidth_saver=True)
+    for now in range(0, 100, 2):
+        assert policy.observe(health(buffer=10, waiting=False, observed=100_000_000), now)

@@ -43,7 +43,9 @@ async def test_fallback_command_and_cleanup(tmp_path, configured_resolution, exp
                 "quality": "high",
                 "sr_model": "nomos",
             }
-            assert ffmpeg_session.get_session(result["session_id"])["bandwidth_saver"] is True
+            session = ffmpeg_session.get_session(result["session_id"])
+            assert session is not None
+            assert session["bandwidth_saver"] is True
         finally:
             ffmpeg_session.stop_session(result["session_id"], force=True)
         assert not list(tmp_path.iterdir())
@@ -70,3 +72,30 @@ async def test_fallback_does_not_reuse_high_quality_stream():
     stop.assert_called_once_with("old", force=True)
     reuse.assert_not_called()
     assert start.call_args.args[-1] is True
+
+
+@pytest.mark.asyncio
+async def test_legacy_saver_session_can_request_recovery(tmp_path):
+    from playback_policy import PlaybackHealth
+
+    with (
+        patch("ffmpeg_session.get_settings", return_value={"max_resolution": "1080p"}),
+        patch("ffmpeg_session.get_transcode_dir", return_value=tmp_path),
+        patch("ffmpeg_session.resolve_hls_master_playlist", side_effect=lambda url: url),
+        patch("ffmpeg_session.build_hls_ffmpeg_cmd", return_value=["ffmpeg", "-i", "stream"]),
+        patch("ffmpeg_session.asyncio.create_subprocess_exec", new=AsyncMock(return_value=FakeProcess())),
+        patch("ffmpeg_session._spawn_background_task", side_effect=lambda coro: coro.close()),
+        patch("ffmpeg_session._wait_for_playlist", new=AsyncMock(return_value=True)),
+    ):
+        result = await ffmpeg_session.start_transcode("http://example.com/live.ts", bandwidth_saver=True)
+        session_id = result["session_id"]
+        try:
+            good = PlaybackHealth(buffer_seconds=12, waiting=False, observed_bitrate=20_000_000)
+            with patch("ffmpeg_session.time.monotonic") as clock:
+                for now in range(0, 60, 2):
+                    clock.return_value = now
+                    assert ffmpeg_session.report_playback_health(session_id, "", good) == {"bandwidth_saver": True}
+                clock.return_value = 60
+                assert ffmpeg_session.report_playback_health(session_id, "", good) == {"bandwidth_saver": False}
+        finally:
+            ffmpeg_session.stop_session(session_id, force=True)

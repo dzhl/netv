@@ -45,9 +45,15 @@ private struct GuideMainView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if !model.isPlayerExpanded {
-                navigationRail
-            }
+            // Keep the content's position in the view hierarchy stable while
+            // fullscreen hides the rail, preserving the mounted player.
+            navigationRail
+                .frame(width: model.isPlayerExpanded ? 0 : GuideMetrics.scaled(64))
+                .clipped()
+                .opacity(model.isPlayerExpanded ? 0 : 1)
+                .allowsHitTesting(!model.isPlayerExpanded)
+                .disabled(model.isPlayerExpanded)
+                .accessibilityHidden(model.isPlayerExpanded)
             Group {
                 switch destination {
                 case .live:

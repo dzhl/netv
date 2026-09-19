@@ -18,7 +18,10 @@ final class APIClient {
     static var active: Set<String> = []
     static var overlapping = false
     static var failRelease = false
+    static var saverResponse = false
+    static var requestedSaver: [Bool] = []
     func playbackConfiguration(server: String, channelID: String, bandwidthSaver: Bool) async throws -> PlaybackConfiguration {
+        Self.requestedSaver.append(bandwidthSaver)
         Self.starts += 1
         let id = "session-\(Self.starts)"
         Self.active.insert(id)
@@ -43,7 +46,7 @@ final class APIClient {
         )
     }
     func reportPlaybackHealth(server: String, sessionID: String, health: PlaybackHealth) async throws -> PlaybackHealthResponse {
-        PlaybackHealthResponse(bandwidthSaver: false)
+        PlaybackHealthResponse(bandwidthSaver: Self.saverResponse)
     }
 }
 
@@ -89,7 +92,21 @@ struct PlaybackStartChecks {
         let recovered = try await model.playerConfiguration(for: c)
         precondition(!APIClient.overlapping)
         precondition(APIClient.active == [recovered.transcodeSessionID!])
-        await model.stopPlayback(sessionID: recovered.transcodeSessionID!)
+        let sessionID = recovered.transcodeSessionID!
+        APIClient.saverResponse = true
+        _ = try await model.reportPlaybackHealth(sessionID: sessionID, health: PlaybackHealth())
+        precondition(model.bandwidthSaver, "Server fallback must enable saver")
+        APIClient.saverResponse = false
+        _ = try await model.reportPlaybackHealth(sessionID: "obsolete", health: PlaybackHealth())
+        precondition(model.bandwidthSaver, "Obsolete session feedback must not clear saver")
+        _ = try await model.reportPlaybackHealth(sessionID: sessionID, health: PlaybackHealth())
+        precondition(!model.bandwidthSaver, "Server recovery must clear saver")
+        let restored = try await model.playerConfiguration(for: c)
+        precondition(APIClient.requestedSaver.last == false, "Recovery must restore normal startup")
+        APIClient.saverResponse = true
+        _ = try await model.reportPlaybackHealth(sessionID: sessionID, health: PlaybackHealth())
+        precondition(!model.bandwidthSaver, "Late fallback must not affect the new session")
+        await model.stopPlayback(sessionID: restored.transcodeSessionID!)
         precondition(APIClient.active.isEmpty)
         print("Playback startup checks passed: cancellation, rapid tuning, failed release, recovery")
     }

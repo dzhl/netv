@@ -1226,7 +1226,16 @@ if __name__ == "__main__":
 
 
 @pytest.mark.parametrize("hw", ["software", "nvenc+software", "amf+software", "qsv", "vaapi"])
-def test_bandwidth_saver_bypasses_ai_and_scales_down(hw):
+def test_bandwidth_saver_bypasses_ai_and_scales_down(hw: HwAccel):
+    media_info = MediaInfo(
+        video_codec="h264",
+        audio_codec="aac",
+        pix_fmt="yuv420p",
+        audio_channels=2,
+        audio_sample_rate=48000,
+        audio_profile="LC",
+        height=2160,
+    )
     with (
         patch("ffmpeg_command._load_settings", return_value={"sr_model": "nomos"}),
         patch("ffmpeg_command._sr_engine_dir", "/models"),
@@ -1234,7 +1243,7 @@ def test_bandwidth_saver_bypasses_ai_and_scales_down(hw):
     ):
         cmd = build_hls_ffmpeg_cmd(
             "http://example.com/live.ts", hw, "/tmp/hls",
-            media_info=FakeMediaInfo(height=2160), max_resolution="720p",
+            media_info=media_info, max_resolution="720p",
             quality="low", allow_upscale=False,
         )
     sr_filter.assert_not_called()

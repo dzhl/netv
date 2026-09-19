@@ -18,20 +18,18 @@ it across the top; the channel guide is below. Selecting a category only filters
 the list; selecting a channel tunes playback. Search covers channel names and all
 loaded program titles, and channel counts follow the search.
 
-On TV, the navigation rail also has Search and Refresh controls. Full Screen
-hides the rail and category/guide panels and lets the player fill the display,
-including the usual tvOS safe-area margins. Video retains its original aspect
-ratio. Back/Menu returns to the guide without restarting playback, preserving
-the selected category and scroll position. The remote's Play/Pause button still
-works without showing a transport overlay.
+On TV, the navigation rail also has Search and Refresh controls. Select a channel
+once to play it in the preview, then select the same channel again to fill the
+display. Back/Menu returns to the guide and focuses the playing channel, so
+pressing Select again returns to fullscreen without restarting playback. Video
+retains its original aspect ratio. The remote's Play/Pause button works without
+showing a transport overlay.
 
 Neither Mac nor TV displays a native play/pause toolbar or full-width title
-overlay. Volume lives in a small bottom-left panel whose translucent background
-is limited to that panel: a slider on Mac and remote-focusable minus/plus buttons
-on TV. These adjust the app's audio level; the Siri Remote's hardware volume keys
-still control the connected TV/receiver. App volume carries across channel
-changes and adaptive quality switches. Full-screen controls remain inset from
-the screen edges while the video itself uses the full display.
+overlay. TV has no fullscreen button or percentage/volume panel; use the Siri
+Remote's hardware volume keys to control the connected TV/receiver. Mac retains
+its fullscreen button and bottom-left volume slider. App volume carries across
+channel changes and adaptive quality switches.
 
 Category names and ordering follow the web settings. Use the updated neTV server
 for category metadata and device-local program times; older servers remain
@@ -114,15 +112,26 @@ After a 15-second startup grace period, the backend requests bandwidth saver if 
 buffer remains below three seconds and playback is waiting or downloads cannot keep
 up for eight seconds. Pauses and brief stalls do not trigger it.
 
-Fast-start sessions switch back to their local 720p rendition and stop the high
-encoder. Other sessions stop and retune with AI upscaling disabled, a 720p maximum
-(480p if already configured), and the low encoder quality preset. Bandwidth saver
-remains in effect across channel changes until the Apple app restarts; the web
-player evaluates each new channel session afresh. Global server settings are
-unchanged. Legacy single-rendition fallback reduces resolution and quality without
-imposing the adaptive rendition's bitrate limits. LTE and dropped-frame counts
-alone do not trigger fallback.
-Direct/passthrough streams do not use this backend feedback mechanism.
+Fast-start sessions switch back to their local 720p rendition while keeping the
+high encoder running on the same local ingest. This uses more server CPU/GPU than
+stopping that encoder, but allows recovery without reopening the provider stream.
+The server holds bandwidth saver for at least 60 seconds and requires 30 seconds
+of healthy playback with at least eight seconds buffered and download throughput
+at least 50% above the high rendition's bitrate. Download measurements must stay
+fresh (no gaps over ten seconds), and at least three measurements are required.
+The high encoder must also have fresh, aligned segments before recovery. Pauses,
+stalls, insufficient throughput, and long telemetry gaps reset recovery evidence.
+
+The Apple app follows both fallback and recovery decisions, carrying the current
+decision across channel changes rather than latching saver until restart. New
+fast-start channels still prepare both renditions when saver is enabled. Legacy
+single-rendition sessions stop and retune on either quality change, releasing the
+old session first; a brief interruption is expected. Their recovery threshold uses
+the configured high bitrate plus transport overhead and any larger requirement
+observed before fallback. Their reduced mode disables AI upscaling and uses a 720p
+maximum (480p if already configured) and the low encoder quality preset. Global
+server settings are unchanged. LTE and dropped-frame counts alone do not trigger
+fallback. Direct/passthrough streams do not use this backend feedback mechanism.
 
 An upstream advertising `m3u8` supports HLS, but not necessarily adaptive bitrate.
 Confirm multiple `#EXT-X-STREAM-INF` variants in a channel's master playlist before
@@ -134,11 +143,13 @@ it does not implement provider-side adaptive bitrate switching. Its ingest alrea
 avoids a separate `ffprobe` connection regardless of the `probe_live` setting.
 
 To check on a device, play a transcoded live channel and throttle the connection
-until it repeatedly runs out of buffer. Check that the high-quality encoder stops
-and playback returns to 720p without a second provider connection.
-Also check that a short stall or manual pause does not cause a retune, and that tuning
-another channel starts with bandwidth saver still enabled. Restarting the app
-allows the configured quality to be tried again.
+until it repeatedly runs out of buffer. Check that playback returns to 720p
+without a second provider connection, then restore bandwidth and verify recovery
+after the cooldown and sustained-health requirements. Confirm the session ID and
+provider ingest stay unchanged through both switches. Also check that a short
+stall or manual pause does not cause a retune, and that tuning another channel
+starts with the current saver decision and can subsequently recover. Both the
+server and Apple app must be updated for the complete recovery behavior.
 
 For backend testing on `aitony.tulane`, use the updated Apple app with this branch
 on the server, or reload the web player after restarting the updated backend.

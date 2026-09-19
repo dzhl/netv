@@ -87,7 +87,9 @@ Extensively optimized for minimal latency and CPU usage:
 Apple and web clients share the adaptive live transcoder for configured outputs
 above 720p: one provider ingest, a 720p startup rendition, and a separately warmed
 high-quality rendition. Both use the same backend buffer/throughput policy for
-upgrades and fallback. The web player switches Hls.js levels within one media
+upgrades, fallback, and recovery after sustained bandwidth improvement. The high
+encoder stays warm during bandwidth saver so recovery reuses the same provider
+ingest. The web player switches Hls.js levels within one media
 element using matching playlist dates, and targets 12 seconds behind the live edge
 when enough media is available. Native browser HLS without Hls.js telemetry stays
 at the safe initial quality.

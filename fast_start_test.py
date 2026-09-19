@@ -10,6 +10,7 @@ import subprocess
 
 import pytest
 
+from ffmpeg_command import HwAccel
 from ffmpeg_session_test import FakeProcess
 from playback_policy import PlaybackHealth, PlaybackPolicy
 
@@ -93,7 +94,7 @@ def test_ingest_can_warm_encoders_before_playback_is_ready(tmp_path):
     assert fast_start.ready_bitrate(str(tmp_path), path.name, minimum_segments=1) == 0
 
 
-@pytest.mark.parametrize("hardware", ["nvenc", "software", "amf", "qsv"])
+@pytest.mark.parametrize("hardware", ["nvenc+software", "software", "amf+software", "qsv"])
 @pytest.mark.parametrize(
     "resolution,target,maximum",
     [
@@ -102,13 +103,13 @@ def test_ingest_can_warm_encoders_before_playback_is_ready(tmp_path):
         ("4k", "16000000", "20000000"),
     ],
 )
-def test_upgrade_uses_bounded_bitrate(tmp_path, hardware, resolution, target, maximum):
+def test_upgrade_uses_bounded_bitrate(tmp_path, hardware: HwAccel, resolution, target, maximum):
     cmd = fast_start.encoder_command(str(tmp_path), hardware, resolution, "high", False, True)
     assert cmd[cmd.index("-b:v") + 1] == target
     assert cmd[cmd.index("-maxrate") + 1] == maximum
     assert cmd[cmd.index("-bufsize") + 1] == maximum
     assert not set(cmd) & {"-qp", "-qp_i", "-qp_p", "-global_quality", "-crf", "constqp", "cqp"}
-    if hardware == "nvenc":
+    if hardware == "nvenc+software":
         assert cmd[cmd.index("-rc") + 1] == "vbr"
     low = fast_start.encoder_command(str(tmp_path), hardware, "720p", "low", False, False)
     assert low[low.index("-b:v") + 1] == "4000000"
@@ -126,16 +127,17 @@ def test_master_playlist_only_exposes_local_renditions():
     assert "high.m3u8" not in fast_start.master_playlist("4k", include_high=False)
 
 
-def test_upgrade_requires_sustained_headroom_and_fallback_latches(tmp_path):
+def test_upgrade_fallback_and_recovery_keep_same_encoder_and_session(tmp_path):
     playlist(tmp_path, "low")
     playlist(tmp_path, "high")
     high = FakeProcess()
+    policy = PlaybackPolicy()
     session = dict(
         dir=str(tmp_path),
         username="u",
         fast_start=True,
         high_process=high,
-        playback_policy=PlaybackPolicy(),
+        playback_policy=policy,
     )
     good = PlaybackHealth(buffer_seconds=10, waiting=False, observed_bitrate=20000)
     weak = PlaybackHealth(buffer_seconds=10, waiting=False, observed_bitrate=8000)
@@ -160,18 +162,30 @@ def test_upgrade_requires_sustained_headroom_and_fallback_latches(tmp_path):
             assert ffmpeg_session.report_playback_health("fast", "u", good)["playlist"].endswith(
                 "/high.m3u8"
             )
-        session["playback_policy"].bandwidth_saver = True
+        policy.bandwidth_saver = True
         clock.return_value = 16
         result = ffmpeg_session.report_playback_health("fast", "u", good)
         assert result["bandwidth_saver"]
         assert result["playlist"].endswith("/low.m3u8")
-        assert high.returncode == -15
+        assert high.returncode is None
+        for now in range(18, 76, 2):
+            clock.return_value = now
+            result = ffmpeg_session.report_playback_health("fast", "u", good)
+            assert result["bandwidth_saver"]
+            assert result["playlist"].endswith("/low.m3u8")
+        clock.return_value = 76
+        result = ffmpeg_session.report_playback_health("fast", "u", good)
+        assert not result["bandwidth_saver"]
+        assert result["playlist"].endswith("/high.m3u8")
+        assert session["high_process"] is high
+        assert high.returncode is None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bandwidth_saver", [False, True])
 @pytest.mark.parametrize("fail_high", [False, True])
 @pytest.mark.parametrize("source_duration", [4, 6])
-async def test_shared_session_cleanup(tmp_path, fail_high, source_duration):
+async def test_shared_session_cleanup(tmp_path, fail_high, source_duration, bandwidth_saver):
     launched = []
     startup_ready = False
     durations = iter([source_duration, 2, 2 * source_duration - 2, 2 * source_duration])
@@ -217,12 +231,17 @@ async def test_shared_session_cleanup(tmp_path, fail_high, source_duration):
             side_effect=measure_duration,
         ) as duration,
     ):
-        result = await ffmpeg_session.start_transcode("https://provider/live", fast_start=True)
+        result = await ffmpeg_session.start_transcode(
+            "https://provider/live", fast_start=True, bandwidth_saver=bandwidth_saver
+        )
         assert duration.call_count == 4
         assert len(launched) == (2 if fail_high else 3)
         assert result["playlist"].endswith("/low.m3u8")
         assert result["master_playlist"].endswith("/master.m3u8")
-        master = pathlib.Path(ffmpeg_session.get_session(result["session_id"])["dir"]) / "master.m3u8"
+        session = ffmpeg_session.get_session(result["session_id"])
+        assert session is not None
+        assert session["playback_policy"].bandwidth_saver is bandwidth_saver
+        master = pathlib.Path(session["dir"]) / "master.m3u8"
         assert ("high.m3u8" in master.read_text()) is not fail_high
         reused = await ffmpeg_session.start_transcode("https://provider/live", fast_start=True)
         assert reused == result
@@ -353,3 +372,20 @@ def test_real_local_encoders_share_timestamps(tmp_path):
             if process.poll() is None:
                 process.kill()
             process.wait()
+
+
+def test_saver_does_not_recover_when_high_encoder_has_failed(tmp_path):
+    playlist(tmp_path, "low")
+    playlist(tmp_path, "high")
+    high = FakeProcess()
+    high.returncode = 1
+    session = dict(dir=str(tmp_path), username="u", fast_start=True,
+        high_process=high, playback_policy=PlaybackPolicy(bandwidth_saver=True),
+        recovery_bitrate=7520)
+    good = PlaybackHealth(buffer_seconds=12, waiting=False, observed_bitrate=100000)
+    with patch.dict(ffmpeg_session._transcode_sessions, {"failed": session}), patch("ffmpeg_session.time.monotonic") as clock:
+        for now in range(0, 120, 2):
+            clock.return_value = now
+            result = ffmpeg_session.report_playback_health("failed", "u", good)
+            assert result["bandwidth_saver"]
+            assert result["playlist"].endswith("/low.m3u8")

@@ -40,6 +40,7 @@ from ffmpeg_command import (
     get_transcode_dir,
     get_user_agent,
     invalidate_series_probe_cache,
+    live_video_bitrates,
     probe_media,
     resolve_hls_master_playlist,
     restore_probe_cache_entry,
@@ -952,7 +953,9 @@ async def _do_start_transcode(
             "username": username,
             "source_id": source_id,
             "bandwidth_saver": bandwidth_saver,
-            "playback_policy": PlaybackPolicy(),
+            "playback_policy": PlaybackPolicy(bandwidth_saver=bandwidth_saver),
+            "recovery_bitrate": live_video_bitrates(settings.get("max_resolution", "1080p"))[1]
+            * 1.1,
         }
         _url_to_session[url] = session_id
 
@@ -1070,12 +1073,16 @@ async def start_transcode(
 
     if (
         fast_start
-        and not bandwidth_saver
         and content_type == "live"
         and get_settings().get("max_resolution", "1080p") in ("1080p", "1440p", "4k")
     ):
         return await _start_fast_live(
-            url, username, source_id, deinterlace_fallback, is_disconnected=is_disconnected
+            url,
+            username,
+            source_id,
+            deinterlace_fallback,
+            bandwidth_saver=bandwidth_saver,
+            is_disconnected=is_disconnected,
         )
 
     # Start fresh transcode (with retry for series probe cache staleness)
@@ -1344,15 +1351,28 @@ def report_playback_health(
         if session.get("is_vod"):
             raise HTTPException(400, "Playback feedback is only supported for live streams")
         session["last_access"] = time.time()
-        downgrade = session["playback_policy"].observe(health, time.monotonic())
-        saver = bool(downgrade or session.get("bandwidth_saver"))
+        now = time.monotonic()
+        policy = session["playback_policy"]
+        # Remember actual high-rendition requirements for legacy sessions, whose
+        # configured bitrate may only be an estimate.
+        if not policy.bandwidth_saver and not session.get("bandwidth_saver"):
+            session["recovery_bitrate"] = max(
+                session.get("recovery_bitrate", 0), health.required_bitrate
+            )
+        high_alive = _is_process_alive(session.get("high_process"))
+        bitrate = ready_bitrate(session["dir"], "high.m3u8") if high_alive else 0
+        caught_up = bitrate > 0 and aligned(session["dir"]) if session.get("fast_start") else False
+        if session.get("fast_start") and bitrate > 0:
+            session["recovery_bitrate"] = max(session.get("recovery_bitrate", 0), bitrate)
+        saver = policy.observe(
+            health,
+            now,
+            session.get("recovery_bitrate", 0),
+            recovery_ready=caught_up if session.get("fast_start") else True,
+        )
         result: dict[str, Any] = {"bandwidth_saver": saver}
         if session.get("fast_start"):
-            high_alive = _is_process_alive(session.get("high_process"))
-            bitrate = ready_bitrate(session["dir"], "high.m3u8") if high_alive else 0
-            now = time.monotonic()
             upgrade = session.setdefault("upgrade_policy", UpgradePolicy())
-            caught_up = bitrate > 0 and aligned(session["dir"])
             was_high = session.get("high_selected", False)
             if upgrade.observe(health, bitrate, caught_up, now):
                 session["high_selected"] = True
@@ -1360,13 +1380,13 @@ def report_playback_health(
             # Existing playback health handles sustained stalls after promotion.
             if saver or not high_alive:
                 session["high_selected"] = False
-            if saver and high_alive:
-                _kill_process(session["high_process"])
+            # Keep the local encoder warm so recovery uses the same ingest and
+            # timeline. A dead high encoder still leaves low playback available.
             name = "high.m3u8" if session.get("high_selected") else "low.m3u8"
             if now - session.get("upgrade_log_at", float("-inf")) >= 10 or was_high != session.get(
                 "high_selected", False
             ):
-                reason = "bandwidth saver latched" if saver else upgrade.reason
+                reason = "bandwidth saver recovering" if saver else upgrade.reason
                 log.info(
                     "Playback quality %s: selected=%s reason=%s buffer=%.1fs waiting=%s "
                     "observed=%.2fMbps high=%.2fMbps aligned=%s samples=%d",
@@ -1391,6 +1411,7 @@ async def _start_fast_live(
     source_id: str,
     deinterlace: bool,
     *,
+    bandwidth_saver: bool = False,
     is_disconnected: Callable[[], Awaitable[bool]] | None = None,
 ) -> dict[str, Any]:
     """One provider reader, two independent encoders, one session/stream slot."""
@@ -1467,8 +1488,8 @@ async def _start_fast_live(
                 "is_vod": False,
                 "username": username,
                 "source_id": source_id,
-                "bandwidth_saver": False,
-                "playback_policy": PlaybackPolicy(),
+                "bandwidth_saver": bandwidth_saver,
+                "playback_policy": PlaybackPolicy(bandwidth_saver=bandwidth_saver),
                 "fast_start": True,
                 "subtitles": [],
                 "duration": 0,
@@ -1527,9 +1548,7 @@ async def _start_fast_live(
         except OSError:
             log.exception("High-quality encoder unavailable; continuing at 720p")
         (pathlib.Path(directory) / "master.m3u8").write_text(
-            master_playlist(
-                settings.get("max_resolution", "1080p"), include_high=high is not None
-            )
+            master_playlist(settings.get("max_resolution", "1080p"), include_high=high is not None)
         )
         return _adaptive_session_response(session_id)
     except BaseException:

@@ -68,17 +68,14 @@ struct PlayerView: View {
             #endif
         }
         #if os(macOS) || os(tvOS)
+        #if os(macOS)
         .overlay(alignment: .bottomLeading) {
             if player != nil {
-                #if os(macOS)
                 MacVolumeControl(volume: $model.playbackVolume)
                     .padding(12)
-                #else
-                TVVolumeControl(volume: $model.playbackVolume)
-                    .padding(model.isPlayerExpanded ? 48 : 18)
-                #endif
             }
         }
+        #endif
         .overlay(alignment: .topLeading) {
             if let quality {
                 Text(quality)
@@ -193,7 +190,7 @@ struct PlayerView: View {
                             sampler = PlaybackHealthSampler()
                             continue
                         }
-                        if feedback.playlist == nil && feedback.bandwidthSaver && !bandwidthSaver {
+                        if feedback.playlist == nil && feedback.bandwidthSaver != bandwidthSaver {
                             shouldRetune = true
                             break
                         }
@@ -349,52 +346,6 @@ private struct PlayerController: UIViewControllerRepresentable {
     }
 }
 
-private struct TVVolumeControl: View {
-    @Binding var volume: Double
-    @FocusState private var focusedAdjustment: Adjustment?
-
-    private enum Adjustment: Hashable {
-        case down
-        case up
-    }
-
-    var body: some View {
-        HStack(spacing: 14) {
-            volumeButton(.down, icon: "minus", label: "Decrease volume") {
-                adjustVolume(by: -0.1)
-            }
-            Text("\(Int((volume * 100).rounded()))%")
-                .font(.system(size: 22, weight: .medium).monospacedDigit())
-                .frame(width: 62)
-                .accessibilityLabel("Volume")
-                .accessibilityValue("\(Int((volume * 100).rounded())) percent")
-            volumeButton(.up, icon: "plus", label: "Increase volume") {
-                adjustVolume(by: 0.1)
-            }
-        }
-        .foregroundStyle(.white)
-        .padding(10)
-        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
-        .focusSection()
-    }
-
-    private func adjustVolume(by delta: Double) {
-        volume = min(1, max(0, ((volume + delta) * 100).rounded() / 100))
-    }
-
-    private func volumeButton(
-        _ adjustment: Adjustment, icon: String, label: String, action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 22))
-                .frame(width: 52, height: 44)
-        }
-        .buttonStyle(GuideButtonStyle(isFocused: focusedAdjustment == adjustment))
-        .focused($focusedAdjustment, equals: adjustment)
-        .accessibilityLabel(label)
-    }
-}
 #endif
 
 /// Classify on the larger of the frame height and the height a 16:9 frame of this width

@@ -895,6 +895,7 @@ class TestPlaybackFeedback:
             "username": "viewer", "playback_policy": PlaybackPolicy(), "last_access": 0,
         }
         health = PlaybackHealth(buffer_seconds=0, waiting=True)
+        result = None
         with patch("ffmpeg_session.time.monotonic") as clock:
             for now in range(0, 26, 2):
                 clock.return_value = now
