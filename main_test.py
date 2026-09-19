@@ -129,6 +129,47 @@ def test_live_dvr_disabled_keeps_direct_auto_mode(auth_client):
     assert 'liveDvrMins: 0' in response.text
 
 
+def test_live_player_shows_program_end_from_epg(auth_client):
+    from main import PlayerInfo
+
+    info = PlayerInfo(
+        url="https://example.test/live.ts",
+        channel_name="Test channel",
+        program_title="News",
+        program_end=1750000000.0,
+    )
+    with patch("main._get_live_player_info", return_value=info):
+        response = auth_client.get("/play/live/test")
+    assert response.status_code == 200
+    assert 'programEnd: 1750000000.0' in response.text
+    assert 'id="program-remaining"' in response.text
+
+
+def test_live_player_info_reads_program_end_from_epg():
+    from datetime import UTC, datetime, timedelta
+
+    from epg import Program
+
+    import main
+
+    stop = datetime.now(UTC) + timedelta(minutes=30)
+    program = Program("ch1", "News", datetime.now(UTC) - timedelta(minutes=30), stop)
+    stream = {
+        "stream_id": "1",
+        "name": "Channel",
+        "direct_url": "https://example.test/live.ts",
+        "epg_channel_id": "ch1",
+    }
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": [stream]}),
+        patch("epg.get_programs_in_range", return_value=[program]),
+    ):
+        info = main._get_live_player_info("1")
+    assert info.program_title == "News"
+    assert info.program_end == stop.timestamp()
+
+
 def test_adaptive_start_uses_shared_backend(auth_client):
     result = {
         "session_id": "shared",

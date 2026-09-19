@@ -1348,6 +1348,7 @@ class PlayerInfo:
     channel_name: str = ""
     program_title: str = ""
     program_desc: str = ""
+    program_end: float = 0.0  # Unix timestamp of current program end (EPG)
     deinterlace_fallback: bool = True  # Used when probe is skipped
     source_id: str = ""  # Source ID for stream limit tracking
     category_ids: list[str] | None = None  # Category IDs for live streams (access check)
@@ -1406,6 +1407,7 @@ def _get_live_player_info(stream_id: str) -> PlayerInfo:
         programs = epg.get_programs_in_range(epg_id, now, now + timedelta(minutes=1))
         if programs:
             info.program_title, info.program_desc = programs[0].title, programs[0].desc
+            info.program_end = programs[0].stop.timestamp()
     return info
 
 
@@ -1621,6 +1623,7 @@ async def player_page(
             "channel_name": info.channel_name,
             "program_title": info.program_title,
             "program_desc": info.program_desc,
+            "program_end": info.program_end,
             "captions_enabled": user_settings.get("captions_enabled", False),
             "resume_position": resume_position,
             "series_id": series_id,

@@ -443,6 +443,32 @@
   }
 
   // ============================================================
+  // Program Time Remaining
+  // ============================================================
+
+  // Live remaining time comes from the EPG program end, not from the
+  // DVR segment window. The broadcast continues while paused, so the
+  // countdown follows wall-clock time.
+  function setupProgramRemaining() {
+    if (cfg.isVod || !cfg.programEnd) return;
+    const el = document.getElementById('program-remaining');
+    if (!el) return;
+    let timerId;
+    const update = () => {
+      const remaining = cfg.programEnd - Date.now() / 1000;
+      if (remaining <= 0) {
+        el.classList.add('hidden');
+        clearInterval(timerId);
+        return;
+      }
+      el.textContent = formatTime(remaining) + ' left';
+      el.classList.remove('hidden');
+    };
+    update();
+    timerId = setInterval(update, 1000);
+  }
+
+  // ============================================================
   // Progress Polling
   // ============================================================
 
@@ -1390,6 +1416,7 @@
     applyCaptionStyles();
     setupPositionTracking();
     setupLiveDvrResume();
+    setupProgramRemaining();
     setupKeyboardControls();
     setupButtonHandlers();
     setupActivityTracking();

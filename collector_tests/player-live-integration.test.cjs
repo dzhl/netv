@@ -35,7 +35,7 @@ function element() {
   };
 }
 
-async function player({ isVod = false, native = false, direct = false } = {}) {
+async function player({ isVod = false, native = false, direct = false, programEnd = 0 } = {}) {
   const elements = new Map();
   const getElementById = id => {
     if (!elements.has(id)) elements.set(id, element());
@@ -111,6 +111,7 @@ async function player({ isVod = false, native = false, direct = false } = {}) {
       streamType: isVod ? 'movie' : 'live', isVod,
       transcodeMode: direct ? 'never' : 'always',
       liveDvrMins: isVod ? 0 : 60,
+      programEnd,
       ccStyle: {}, captionsEnabled: false, sourceId: 'provider', isHttps: false,
     },
     location: { href: 'http://netv.test/play/live/1', origin: 'http://netv.test' },
@@ -120,7 +121,7 @@ async function player({ isVod = false, native = false, direct = false } = {}) {
     querySelectorAll: () => [], visibilityState: 'visible',
   });
   const context = createContext({
-    window, document, Hls, URL, Blob, AbortController,
+    window, document, Hls, URL, Blob, AbortController, Date,
     navigator: { sendBeacon: url => { beacons.push(url); return true; } },
     performance: { now: () => 1000 },
     localStorage: { getItem: () => null, setItem() {} },
@@ -268,5 +269,20 @@ test('native HLS DVR resumes at the oldest available position when the pause exp
   p.video.seekable.start = () => 300;
   await p.video.emit('play');
   assert.equal(p.video.currentTime, 300.1);
+  assert.deepEqual(p.errors, []);
+});
+
+test('live player shows EPG program time remaining', async () => {
+  const p = await player({ programEnd: Date.now() / 1000 + 125.5 });
+  const remaining = p.elements.get('program-remaining');
+  assert.equal(remaining.classList.contains('hidden'), false);
+  assert.equal(remaining.textContent, '2:05 left');
+  assert.deepEqual(p.errors, []);
+});
+
+test('live player hides program remaining after the program ends', async () => {
+  const p = await player({ programEnd: Date.now() / 1000 - 1 });
+  const remaining = p.elements.get('program-remaining');
+  assert.equal(remaining.classList.contains('hidden'), true);
   assert.deepEqual(p.errors, []);
 });
