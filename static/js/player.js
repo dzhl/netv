@@ -406,6 +406,27 @@
   }
 
   // ============================================================
+  // Live DVR Resume
+  // ============================================================
+
+  // The server keeps recording while paused, within the DVR retention
+  // window (cfg.liveDvrMins). If the paused position has fallen out of
+  // the window by resume time, continue at the oldest available
+  // position instead of jumping to the live edge.
+  function setupLiveDvrResume() {
+    if (cfg.isVod || !cfg.liveDvrMins) return;
+    let pausedDuringSession = false;
+    video.addEventListener('pause', () => { pausedDuringSession = true; });
+    video.addEventListener('play', () => {
+      if (!pausedDuringSession || !video.seekable.length) return;
+      const windowStart = video.seekable.start(0);
+      if (video.currentTime < windowStart) {
+        video.currentTime = windowStart + 0.1;
+      }
+    });
+  }
+
+  // ============================================================
   // Progress Polling
   // ============================================================
 
@@ -1352,6 +1373,7 @@
 
     applyCaptionStyles();
     setupPositionTracking();
+    setupLiveDvrResume();
     setupKeyboardControls();
     setupButtonHandlers();
     setupActivityTracking();

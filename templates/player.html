@@ -183,6 +183,7 @@
 window.PLAYER_CONFIG = {
   rawUrl: {{ raw_url | tojson }},
   transcodeMode: {{ transcode_mode | tojson }},
+  liveDvrMins: {{ live_dvr_mins | tojson }},
   captionsEnabled: {{ captions_enabled | tojson }},
   streamType: {{ stream_type | tojson }},
   isVod: {{ stream_type | tojson }} === 'movie' || {{ stream_type | tojson }} === 'series',

@@ -1589,7 +1589,10 @@ async def player_page(
     if transcode_mode == "auto":
         needs_transcode = info.is_m3u or ext in ("mkv", "mp4", "avi", "wmv", "flv")
         mixed_content = is_https and info.url.startswith("http://")
-        if needs_transcode or mixed_content:
+        # Pause/rewind requires a server-side buffer; route live through a
+        # local HLS session (stream copy when codecs allow) when DVR is on.
+        needs_dvr = stream_type == "live" and server_settings.get("live_dvr_mins", 0) > 0
+        if needs_transcode or mixed_content or needs_dvr:
             transcode_mode = "always"
 
     # Get saved watch position for VOD (per-user)
@@ -1613,6 +1616,7 @@ async def player_page(
         {
             "raw_url": info.url,
             "transcode_mode": transcode_mode,
+            "live_dvr_mins": server_settings.get("live_dvr_mins", 0),
             "stream_type": stream_type,
             "channel_name": info.channel_name,
             "program_title": info.program_title,
@@ -2168,7 +2172,7 @@ async def settings_page(request: Request, user: Annotated[dict, Depends(require_
             "quality": server_settings.get("quality", "high"),
             "vod_transcode_cache_mins": server_settings.get("vod_transcode_cache_mins", 60),
             "live_transcode_cache_secs": server_settings.get("live_transcode_cache_secs", 60),
-            "live_dvr_mins": server_settings.get("live_dvr_mins", 0),
+            "live_dvr_mins": server_settings.get("live_dvr_mins", 60),
             "transcode_dir": server_settings.get("transcode_dir", ""),
             "probe_live": server_settings.get("probe_live", True),
             "probe_movies": server_settings.get("probe_movies", True),
@@ -2701,7 +2705,7 @@ async def settings_transcode(
     quality: Annotated[str, Form()] = "high",
     vod_transcode_cache_mins: Annotated[int, Form()] = 60,
     live_transcode_cache_secs: Annotated[int, Form()] = 0,
-    live_dvr_mins: Annotated[int, Form()] = 0,
+    live_dvr_mins: Annotated[int, Form()] = 60,
     transcode_dir: Annotated[str, Form()] = "",
     probe_live: Annotated[str | None, Form()] = None,
     probe_movies: Annotated[str | None, Form()] = None,
