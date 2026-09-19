@@ -502,7 +502,7 @@ def load_server_settings() -> dict[str, Any]:
     data.setdefault("vod_transcode_cache_mins", 60)
     # 0 = no caching (dead sessions cleaned immediately)
     data.setdefault("live_transcode_cache_secs", 0)
-    data.setdefault("live_dvr_mins", 0)  # 0 = disabled (default 30 sec buffer)
+    data.setdefault("live_dvr_mins", 60)  # Minutes of live history retained for pause/rewind (0 = ~30s buffer)
     data.setdefault("transcode_dir", "")  # Empty = system temp dir
     data.setdefault("probe_live", True)
     data.setdefault("probe_movies", True)

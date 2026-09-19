@@ -104,6 +104,31 @@ def test_web_player_includes_resolution_badge(auth_client):
     assert "videoWidth" in script.text
 
 
+def test_live_dvr_routes_auto_mode_through_server(auth_client):
+    from main import PlayerInfo
+
+    info = PlayerInfo(url="https://example.test/live.ts", channel_name="Test channel")
+    with patch("main._get_live_player_info", return_value=info):
+        response = auth_client.get("/play/live/test")
+    assert response.status_code == 200
+    assert 'transcodeMode: "always"' in response.text
+    assert 'liveDvrMins: 60' in response.text
+
+
+def test_live_dvr_disabled_keeps_direct_auto_mode(auth_client):
+    from main import PlayerInfo
+
+    settings = cache_module.load_server_settings()
+    settings["live_dvr_mins"] = 0
+    cache_module.save_server_settings(settings)
+    info = PlayerInfo(url="https://example.test/live.ts", channel_name="Test channel")
+    with patch("main._get_live_player_info", return_value=info):
+        response = auth_client.get("/play/live/test")
+    assert response.status_code == 200
+    assert 'transcodeMode: "auto"' in response.text
+    assert 'liveDvrMins: 0' in response.text
+
+
 def test_adaptive_start_uses_shared_backend(auth_client):
     result = {
         "session_id": "shared",

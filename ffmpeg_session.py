@@ -35,6 +35,7 @@ from ffmpeg_command import (
     MediaInfo,
     SubtitleStream,
     build_hls_ffmpeg_cmd,
+    can_remux_live,
     get_hls_segment_duration,
     get_settings,
     get_transcode_dir,
@@ -1076,14 +1077,33 @@ async def start_transcode(
         and content_type == "live"
         and get_settings().get("max_resolution", "1080p") in ("1080p", "1440p", "4k")
     ):
-        return await _start_fast_live(
-            url,
-            username,
-            source_id,
-            deinterlace_fallback,
-            bandwidth_saver=bandwidth_saver,
-            is_disconnected=is_disconnected,
-        )
+        # A DVR request only needs server-side retention. When the source can
+        # be stream-copied, serve one remux session instead of the fast-start
+        # encoder pair; otherwise keep the adaptive transcode pipeline.
+        settings = get_settings()
+        remux = False
+        if (
+            not bandwidth_saver
+            and settings.get("live_dvr_mins", 0) > 0
+            and settings.get("probe_live", True)
+        ):
+            resolved = await asyncio.to_thread(resolve_hls_master_playlist, url)
+            media_info = (await asyncio.to_thread(probe_media, resolved))[0]
+            remux = can_remux_live(media_info, settings.get("max_resolution", "1080p"))
+        if remux:
+            log.info(
+                "DVR live session uses a stream-copy remux instead of fast-start: %s",
+                redact_url_credentials(url),
+            )
+        else:
+            return await _start_fast_live(
+                url,
+                username,
+                source_id,
+                deinterlace_fallback,
+                bandwidth_saver=bandwidth_saver,
+                is_disconnected=is_disconnected,
+            )
 
     # Start fresh transcode (with retry for series probe cache staleness)
     try:

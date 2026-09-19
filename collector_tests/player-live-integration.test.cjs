@@ -42,11 +42,13 @@ async function player({ isVod = false, native = false, direct = false } = {}) {
     return elements.get(id);
   };
   const video = getElementById('video');
+  const seekable = { length: 1, start: () => 0, end: () => 12 };
   Object.assign(video, {
     currentTime: 0, duration: isVod ? 3600 : Infinity,
     paused: true, ended: false, readyState: 4, muted: false, volume: 1,
     videoWidth: 1280, videoHeight: 720,
     buffered: { length: 1, start: () => 0, end: () => 12 },
+    seekable,
     textTracks: Object.assign([], { addEventListener() {} }),
     play: async () => { video.paused = false; },
     pause: () => { video.paused = true; },
@@ -59,6 +61,7 @@ async function player({ isVod = false, native = false, direct = false } = {}) {
   const errors = [];
   let sessionNumber = 0;
   let rendition = 'low';
+  let windowStart = 0;
   const engines = [];
   class Hls {
     static Events = {
@@ -72,6 +75,8 @@ async function player({ isVod = false, native = false, direct = false } = {}) {
       this.handlers = new Map();
       this.subtitleTracks = [];
       this.levels = [];
+      this.currentLevel = -1;
+      this.loadLevel = -1;
       this.sources = [];
       engines.push(this);
     }
@@ -91,7 +96,10 @@ async function player({ isVod = false, native = false, direct = false } = {}) {
       if (url.endsWith('/master.m3u8')) {
         this.levels = ['low', 'high'].map(name => ({
           uri: 'http://netv.test' + url.replace('master.m3u8', `${name}.m3u8`),
+          details: { get fragments() { return [{ start: windowStart }]; } },
         }));
+        this.currentLevel = 0;
+        this.loadLevel = 0;
       }
     }
     attachMedia() { this.emit('manifest'); }
@@ -102,6 +110,7 @@ async function player({ isVod = false, native = false, direct = false } = {}) {
       rawUrl: 'https://provider.example/live.m3u8',
       streamType: isVod ? 'movie' : 'live', isVod,
       transcodeMode: direct ? 'never' : 'always',
+      liveDvrMins: isVod ? 0 : 60,
       ccStyle: {}, captionsEnabled: false, sourceId: 'provider', isHttps: false,
     },
     location: { href: 'http://netv.test/play/live/1', origin: 'http://netv.test' },
@@ -141,6 +150,7 @@ async function player({ isVod = false, native = false, direct = false } = {}) {
   return {
     video, window, elements, engines, calls, beacons, errors, timers,
     setRendition: value => { rendition = value; },
+    setWindowStart: value => { windowStart = value; },
     async pollHealth() {
       const [id, timer] = [...timers].find(([, timer]) => timer.ms === 2000);
       timers.delete(id);
@@ -219,5 +229,44 @@ test('returning from the browser back-forward cache can restart playback', async
   assert.equal(p.engines.length, 2);
   assert.deepEqual(p.engines[1].sources, ['/transcode/session2/master.m3u8']);
   assert.equal(p.engines[0].destroyed, true);
+  assert.deepEqual(p.errors, []);
+});
+
+test('live DVR resumes at the oldest available position when the pause expired', async () => {
+  const p = await player();
+  await p.video.emit('pause');
+  p.video.currentTime = 120;
+  p.setWindowStart(300);
+  await p.video.emit('play');
+  assert.equal(p.video.currentTime, 300.1);
+  assert.deepEqual(p.errors, []);
+});
+
+test('live DVR keeps the paused position when still within the window', async () => {
+  const p = await player();
+  await p.video.emit('pause');
+  p.video.currentTime = 350;
+  p.setWindowStart(300);
+  await p.video.emit('play');
+  assert.equal(p.video.currentTime, 350);
+  assert.deepEqual(p.errors, []);
+});
+
+test('live playback before any pause does not seek to the window start', async () => {
+  const p = await player();
+  p.video.currentTime = 0;
+  p.setWindowStart(300);
+  await p.video.emit('play');
+  assert.equal(p.video.currentTime, 0);
+  assert.deepEqual(p.errors, []);
+});
+
+test('native HLS DVR resumes at the oldest available position when the pause expired', async () => {
+  const p = await player({ native: true });
+  await p.video.emit('pause');
+  p.video.currentTime = 120;
+  p.video.seekable.start = () => 300;
+  await p.video.emit('play');
+  assert.equal(p.video.currentTime, 300.1);
   assert.deepEqual(p.errors, []);
 });

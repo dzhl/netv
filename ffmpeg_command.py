@@ -1217,6 +1217,40 @@ def get_live_hls_list_size(
     return int(dvr_mins * 60 / segment_duration)
 
 
+def _can_copy_video(
+    media_info: MediaInfo | None, max_resolution: str, *, allow_upscale: bool = True
+) -> bool:
+    """Can video be stream-copied (compatible codec, no processing needed)?"""
+    max_h = _MAX_RES_HEIGHT.get(max_resolution, 9999)
+    # SR requires re-encode (can't copy video when SR is active)
+    sr_active = bool(allow_upscale and _sr_engine_dir and _load_settings().get("sr_model", ""))
+    return bool(
+        media_info
+        and media_info.video_codec == "h264"
+        and media_info.pix_fmt == "yuv420p"
+        and media_info.height <= max_h
+        and not sr_active
+        and not media_info.interlaced  # Can't copy if deinterlacing needed
+    )
+
+
+def _can_copy_audio(media_info: MediaInfo | None) -> bool:
+    """Can audio be stream-copied?"""
+    return bool(
+        media_info
+        and media_info.audio_codec == "aac"
+        and media_info.audio_channels <= 2
+        and media_info.audio_sample_rate in (44100, 48000)
+        # HE-AAC has browser compatibility issues - only copy LC-AAC
+        and "HE" not in media_info.audio_profile
+    )
+
+
+def can_remux_live(media_info: MediaInfo | None, max_resolution: str = "1080p") -> bool:
+    """Can a live source be retained via a stream-copy HLS remux?"""
+    return _can_copy_video(media_info, max_resolution) and _can_copy_audio(media_info)
+
+
 def build_hls_ffmpeg_cmd(
     input_url: str,
     hw: HwAccel,
@@ -1232,28 +1266,8 @@ def build_hls_ffmpeg_cmd(
 ) -> list[str]:
     """Build ffmpeg command for HLS transcoding."""
     # Check if we can copy streams directly (compatible codecs, no processing needed)
-    max_h = _MAX_RES_HEIGHT.get(max_resolution, 9999)
-    needs_scale = media_info and media_info.height > max_h
-
-    # SR requires re-encode (can't copy video when SR is active)
-    sr_active = bool(allow_upscale and _sr_engine_dir and _load_settings().get("sr_model", ""))
-
-    copy_video = bool(
-        media_info
-        and media_info.video_codec == "h264"
-        and media_info.pix_fmt == "yuv420p"
-        and not needs_scale
-        and not sr_active
-        and not media_info.interlaced  # Can't copy if deinterlacing needed
-    )
-    copy_audio = bool(
-        media_info
-        and media_info.audio_codec == "aac"
-        and media_info.audio_channels <= 2
-        and media_info.audio_sample_rate in (44100, 48000)
-        # HE-AAC has browser compatibility issues - only copy LC-AAC
-        and "HE" not in media_info.audio_profile
-    )
+    copy_video = _can_copy_video(media_info, max_resolution, allow_upscale=allow_upscale)
+    copy_audio = _can_copy_audio(media_info)
 
     # Full hardware pipeline if GPU supports the codec
     # Parse hw to get encoder type
