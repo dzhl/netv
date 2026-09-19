@@ -73,9 +73,8 @@
 
     <!-- Title overlay -->
     <div id="info-overlay" class="player-controls absolute top-0 left-0 z-30 bg-black/50 rounded-br-lg pb-2 pt-2 px-3">
-      <div>{% if channel_name %}{{ channel_name }}{% if program_title %} &mdash; {{ program_title }}{% endif %}{% else %}Now Playing{% endif %}</div>
-      {% if program_desc %}<div class="text-gray-400 mt-0.5" style="font-size:0.85em">{{ program_desc }}</div>{% endif %}
-      <div id="program-remaining" class="hidden text-gray-300 mt-0.5" style="font-size:0.85em"></div>
+      <div>{% if channel_name %}{{ channel_name }}{% else %}Now Playing{% endif %}<span id="program-title">{% if channel_name and program_title %} &mdash; {{ program_title }}{% endif %}</span></div>
+      <div id="program-desc" class="text-gray-400 mt-0.5{% if not program_desc %} hidden{% endif %}" style="font-size:0.85em">{{ program_desc }}</div>
     </div>
 
     <!-- Loading indicator -->
@@ -188,6 +187,8 @@ window.PLAYER_CONFIG = {
   captionsEnabled: {{ captions_enabled | tojson }},
   streamType: {{ stream_type | tojson }},
   isVod: {{ stream_type | tojson }} === 'movie' || {{ stream_type | tojson }} === 'series',
+  streamId: {{ stream_id | tojson }},
+  programStart: {{ program_start | tojson }},
   programEnd: {{ program_end | tojson }},
   serverResumePosition: {{ resume_position | tojson }},
   seriesId: {{ series_id | tojson }},

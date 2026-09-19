@@ -129,31 +129,35 @@ def test_live_dvr_disabled_keeps_direct_auto_mode(auth_client):
     assert 'liveDvrMins: 0' in response.text
 
 
-def test_live_player_shows_program_end_from_epg(auth_client):
+def test_live_player_passes_program_window_from_epg(auth_client):
     from main import PlayerInfo
 
     info = PlayerInfo(
         url="https://example.test/live.ts",
         channel_name="Test channel",
         program_title="News",
+        program_start=1749998200.0,
         program_end=1750000000.0,
     )
     with patch("main._get_live_player_info", return_value=info):
         response = auth_client.get("/play/live/test")
     assert response.status_code == 200
-    assert 'programEnd: 1750000000.0' in response.text
-    assert 'id="program-remaining"' in response.text
+    assert "programStart: 1749998200.0" in response.text
+    assert "programEnd: 1750000000.0" in response.text
+    assert 'streamId: "test"' in response.text
+    assert 'id="program-remaining"' not in response.text
 
 
-def test_live_player_info_reads_program_end_from_epg():
+def test_live_player_info_reads_program_window_from_epg():
     from datetime import UTC, datetime, timedelta
 
     from epg import Program
 
     import main
 
+    start = datetime.now(UTC) - timedelta(minutes=30)
     stop = datetime.now(UTC) + timedelta(minutes=30)
-    program = Program("ch1", "News", datetime.now(UTC) - timedelta(minutes=30), stop)
+    program = Program("ch1", "News", start, stop)
     stream = {
         "stream_id": "1",
         "name": "Channel",
@@ -167,7 +171,52 @@ def test_live_player_info_reads_program_end_from_epg():
     ):
         info = main._get_live_player_info("1")
     assert info.program_title == "News"
+    assert info.program_start == start.timestamp()
     assert info.program_end == stop.timestamp()
+
+
+def test_live_program_api_returns_current_program(auth_client):
+    from datetime import UTC, datetime, timedelta
+
+    from epg import Program
+
+    start = datetime.now(UTC) - timedelta(minutes=10)
+    stop = start + timedelta(minutes=45)
+    program = Program("ch1", "News", start, stop, desc="Tonight's headlines")
+    stream = {"stream_id": "1", "name": "Channel", "epg_channel_id": "ch1"}
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": [stream]}),
+        patch("epg.get_programs_in_range", return_value=[program]),
+    ):
+        response = auth_client.get("/api/live/program/1")
+    assert response.status_code == 200
+    assert response.json() == {
+        "title": "News",
+        "desc": "Tonight's headlines",
+        "start": start.timestamp(),
+        "end": stop.timestamp(),
+    }
+
+
+def test_live_program_api_without_guide_data_returns_empty_program(auth_client):
+    stream = {"stream_id": "1", "name": "Channel"}
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": [stream]}),
+    ):
+        response = auth_client.get("/api/live/program/1")
+    assert response.status_code == 200
+    assert response.json() == {"title": "", "desc": "", "start": 0.0, "end": 0.0}
+
+
+def test_live_program_api_unknown_stream_is_not_found(auth_client):
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": []}),
+    ):
+        response = auth_client.get("/api/live/program/missing")
+    assert response.status_code == 404
 
 
 def test_adaptive_start_uses_shared_backend(auth_client):

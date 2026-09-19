@@ -6,6 +6,10 @@ const { createContext, runInContext } = require('node:vm');
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
+// Percentages ride on Date.now(), so compare them to the millisecond.
+const assertPercent = (actual, expected) =>
+  assert.ok(Math.abs(parseFloat(actual) - expected) < 0.01, `${actual} is not about ${expected}%`);
+
 function element() {
   const listeners = new Map();
   const classes = new Set(['hidden']);
@@ -32,10 +36,14 @@ function element() {
       for (const handler of listeners.get(name) || []) await handler(value);
     },
     setAttribute() {}, removeAttribute() {}, appendChild() {},
+    getBoundingClientRect: () => ({ left: 0, width: 100, top: 0, height: 4 }),
   };
 }
 
-async function player({ isVod = false, native = false, direct = false, programEnd = 0 } = {}) {
+async function player({
+  isVod = false, native = false, direct = false,
+  programStart = 0, programEnd = 0, nextProgram = null,
+} = {}) {
   const elements = new Map();
   const getElementById = id => {
     if (!elements.has(id)) elements.set(id, element());
@@ -111,7 +119,7 @@ async function player({ isVod = false, native = false, direct = false, programEn
       streamType: isVod ? 'movie' : 'live', isVod,
       transcodeMode: direct ? 'never' : 'always',
       liveDvrMins: isVod ? 0 : 60,
-      programEnd,
+      streamId: '1', programStart, programEnd,
       ccStyle: {}, captionsEnabled: false, sourceId: 'provider', isHttps: false,
     },
     location: { href: 'http://netv.test/play/live/1', origin: 'http://netv.test' },
@@ -140,6 +148,8 @@ async function player({ isVod = false, native = false, direct = false, programEn
         };
       } else if (url.endsWith('/health')) {
         data = { playlist: `/transcode/session${sessionNumber}/${rendition}.m3u8` };
+      } else if (url.startsWith('/api/live/program/')) {
+        data = nextProgram || { title: '', desc: '', start: 0, end: 0 };
       }
       return { ok: true, json: async () => data };
     },
@@ -152,6 +162,12 @@ async function player({ isVod = false, native = false, direct = false, programEn
     video, window, elements, engines, calls, beacons, errors, timers,
     setRendition: value => { rendition = value; },
     setWindowStart: value => { windowStart = value; },
+    setLiveEdge: value => { for (const engine of engines) engine.liveSyncPosition = value; },
+    async tickProgram() {
+      const [, timer] = [...timers].find(([, timer]) => timer.ms === 1000);
+      await timer.fn();
+      await flush();
+    },
     async pollHealth() {
       const [id, timer] = [...timers].find(([, timer]) => timer.ms === 2000);
       timers.delete(id);
@@ -272,17 +288,79 @@ test('native HLS DVR resumes at the oldest available position when the pause exp
   assert.deepEqual(p.errors, []);
 });
 
-test('live player shows EPG program time remaining', async () => {
-  const p = await player({ programEnd: Date.now() / 1000 + 125.5 });
-  const remaining = p.elements.get('program-remaining');
-  assert.equal(remaining.classList.contains('hidden'), false);
-  assert.equal(remaining.textContent, '2:05 left');
+test('live controls span the EPG program instead of the segment window', async () => {
+  const now = Date.now() / 1000;
+  const p = await player({ programStart: now - 600.5, programEnd: now + 1199.5 });
+  p.setLiveEdge(0);
+  await p.video.emit('timeupdate');
+  assert.equal(p.elements.get('progress-container').classList.contains('hidden'), false);
+  assert.equal(p.elements.get('time-current').textContent, '10:00');
+  assert.equal(p.elements.get('time-duration').textContent, '-19:59');
+  assertPercent(p.elements.get('progress-played').style.width, (600.5 / 1800) * 100);
   assert.deepEqual(p.errors, []);
 });
 
-test('live player hides program remaining after the program ends', async () => {
-  const p = await player({ programEnd: Date.now() / 1000 - 1 });
-  const remaining = p.elements.get('program-remaining');
-  assert.equal(remaining.classList.contains('hidden'), true);
+test('rewinding moves the program position back by the distance behind live', async () => {
+  const now = Date.now() / 1000;
+  const p = await player({ programStart: now - 600.5, programEnd: now + 1199.5 });
+  p.setLiveEdge(300);
+  p.video.currentTime = 180;
+  await p.video.emit('timeupdate');
+  assert.equal(p.elements.get('time-current').textContent, '8:00');
+  assert.equal(p.elements.get('time-duration').textContent, '-21:59');
+  assert.deepEqual(p.errors, []);
+});
+
+test('live DVR window is shaded over the part of the program still held', async () => {
+  const now = Date.now() / 1000;
+  const p = await player({ programStart: now - 600.5, programEnd: now + 1199.5 });
+  p.setLiveEdge(300);
+  p.setWindowStart(60);
+  await p.video.emit('timeupdate');
+  const buffered = p.elements.get('progress-buffered');
+  assertPercent(buffered.style.left, ((600.5 - 240) / 1800) * 100);
+  assertPercent(buffered.style.width, (240 / 1800) * 100);
+  assert.deepEqual(p.errors, []);
+});
+
+test('clicking the live bar seeks to that moment of the broadcast', async () => {
+  const now = Date.now() / 1000;
+  const p = await player({ programStart: now - 600.5, programEnd: now + 1199.5 });
+  p.setLiveEdge(1000);
+  await p.elements.get('progress-bar').emit('click', { clientX: 25 });
+  // 25% into a 30 minute program is 450s, which is 150.5s before now.
+  assert.ok(Math.abs(p.video.currentTime - 849.5) < 1, `seeked to ${p.video.currentTime}`);
+  assert.deepEqual(p.errors, []);
+});
+
+test('clicking before the DVR window clamps to the oldest retained position', async () => {
+  const now = Date.now() / 1000;
+  const p = await player({ programStart: now - 600.5, programEnd: now + 1199.5 });
+  p.setLiveEdge(1000);
+  p.setWindowStart(900);
+  await p.elements.get('progress-bar').emit('click', { clientX: 1 });
+  assert.equal(p.video.currentTime, 900.1);
+  assert.deepEqual(p.errors, []);
+});
+
+test('live controls stay hidden when the guide has no program', async () => {
+  const p = await player();
+  assert.equal(p.elements.get('progress-container').classList.contains('hidden'), true);
+  assert.deepEqual(p.errors, []);
+});
+
+test('the next guide program takes over when the current one ends', async () => {
+  const now = Date.now() / 1000;
+  const p = await player({
+    programStart: now - 1800, programEnd: now - 0.5,
+    nextProgram: { title: 'Next Up', desc: 'Later tonight', start: now - 0.5, end: now + 3599.5 },
+  });
+  p.setLiveEdge(0);
+  await p.tickProgram();
+  assert.equal(p.elements.get('program-title').textContent, ' \u2014 Next Up');
+  assert.equal(p.elements.get('program-desc').textContent, 'Later tonight');
+  assert.equal(p.elements.get('program-desc').classList.contains('hidden'), false);
+  assert.equal(p.elements.get('time-current').textContent, '0:00');
+  assert.equal(p.elements.get('time-duration').textContent, '-59:59');
   assert.deepEqual(p.errors, []);
 });

@@ -1348,6 +1348,7 @@ class PlayerInfo:
     channel_name: str = ""
     program_title: str = ""
     program_desc: str = ""
+    program_start: float = 0.0  # Unix timestamp of current program start (EPG)
     program_end: float = 0.0  # Unix timestamp of current program end (EPG)
     deinterlace_fallback: bool = True  # Used when probe is skipped
     source_id: str = ""  # Source ID for stream limit tracking
@@ -1365,6 +1366,23 @@ def _get_episode_desc(ep: dict) -> str:
     if isinstance(info, dict):
         return info.get("plot") or info.get("description") or ""
     return ep.get("description") or ep.get("plot") or ""
+
+
+def _get_current_program(epg_id: str) -> dict | None:
+    """Current EPG program for a channel, or None when the guide has no entry."""
+    if not epg_id:
+        return None
+    now = datetime.now(UTC)
+    programs = epg.get_programs_in_range(epg_id, now, now + timedelta(minutes=1))
+    if not programs:
+        return None
+    program = programs[0]
+    return {
+        "title": program.title,
+        "desc": program.desc,
+        "start": program.start.timestamp(),
+        "end": program.stop.timestamp(),
+    }
 
 
 def _get_live_player_info(stream_id: str) -> PlayerInfo:
@@ -1401,13 +1419,12 @@ def _get_live_player_info(stream_id: str) -> PlayerInfo:
             info.deinterlace_fallback = source.get("deinterlace_fallback", True)
 
     # Look up current program from EPG
-    epg_id = stream.get("epg_channel_id") or ""
-    if epg_id:
-        now = datetime.now(UTC)
-        programs = epg.get_programs_in_range(epg_id, now, now + timedelta(minutes=1))
-        if programs:
-            info.program_title, info.program_desc = programs[0].title, programs[0].desc
-            info.program_end = programs[0].stop.timestamp()
+    program = _get_current_program(stream.get("epg_channel_id") or "")
+    if program:
+        info.program_title = program["title"]
+        info.program_desc = program["desc"]
+        info.program_start = program["start"]
+        info.program_end = program["end"]
     return info
 
 
@@ -1617,12 +1634,14 @@ async def player_page(
         "player.html",
         {
             "raw_url": info.url,
+            "stream_id": stream_id,
             "transcode_mode": transcode_mode,
             "live_dvr_mins": server_settings.get("live_dvr_mins", 0),
             "stream_type": stream_type,
             "channel_name": info.channel_name,
             "program_title": info.program_title,
             "program_desc": info.program_desc,
+            "program_start": info.program_start,
             "program_end": info.program_end,
             "captions_enabled": user_settings.get("captions_enabled", False),
             "resume_position": resume_position,
@@ -1637,6 +1656,30 @@ async def player_page(
             "source_id": info.source_id,
             "content_access": _get_content_access(username),
         },
+    )
+
+
+@app.get("/api/live/program/{stream_id:path}")
+async def live_program_api(
+    stream_id: str,
+    user: Annotated[dict, Depends(require_auth)],
+):
+    """Current EPG program for a live channel, polled when one ends mid-watch."""
+
+    def lookup() -> dict | None:
+        _ensure_live_cache()
+        stream = next(
+            (s for s in get_cache()["live_streams"] if str(s.get("stream_id")) == stream_id),
+            None,
+        )
+        if not stream:
+            raise HTTPException(404, "Stream not found")
+        return _get_current_program(stream.get("epg_channel_id") or "")
+
+    program = await asyncio.to_thread(lookup)
+    return JSONResponse(
+        program or {"title": "", "desc": "", "start": 0.0, "end": 0.0},
+        headers={"Cache-Control": "no-store"},
     )
 
 

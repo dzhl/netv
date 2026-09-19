@@ -31,6 +31,10 @@
   let adaptiveSession = null;
   let adaptivePlayback = null;
   let transcodePlaylist = null;
+  let programStart = cfg.programStart || 0;
+  let programEnd = cfg.programEnd || 0;
+  let programRefreshInFlight = false;
+  let programRetryAt = 0;
 
   // ============================================================
   // Utilities
@@ -409,6 +413,30 @@
   // Live DVR Resume
   // ============================================================
 
+  // MSE reports seekable as [0, duration] for live streams, so the
+  // retained window must come from the active playlist's first
+  // fragment. Native HLS (Safari) reports the real window in seekable.
+  function liveWindowStart() {
+    if (currentHls) {
+      const levels = currentHls.levels || [];
+      const level = levels[currentHls.currentLevel] || levels[currentHls.loadLevel] || levels[0];
+      const fragments = level && level.details && level.details.fragments;
+      if (fragments && fragments.length && Number.isFinite(fragments[0].start)) {
+        return fragments[0].start;
+      }
+      return null;
+    }
+    return video.seekable.length ? video.seekable.start(0) : null;
+  }
+
+  // Playback position of the live edge: what plays when fully caught up.
+  function liveEdge() {
+    if (currentHls) {
+      return Number.isFinite(currentHls.liveSyncPosition) ? currentHls.liveSyncPosition : null;
+    }
+    return video.seekable.length ? video.seekable.end(video.seekable.length - 1) : null;
+  }
+
   // The server keeps recording while paused, within the DVR retention
   // window (cfg.liveDvrMins). If the paused position has fallen out of
   // the window by resume time, continue at the oldest available
@@ -416,56 +444,134 @@
   function setupLiveDvrResume() {
     if (cfg.isVod || !cfg.liveDvrMins) return;
 
-    // MSE reports seekable as [0, duration] for live streams, so the
-    // retained window must come from the active playlist's first
-    // fragment. Native HLS (Safari) reports the real window in seekable.
-    function windowStart() {
-      if (currentHls) {
-        const levels = currentHls.levels || [];
-        const level = levels[currentHls.currentLevel] || levels[currentHls.loadLevel] || levels[0];
-        const fragments = level && level.details && level.details.fragments;
-        if (fragments && fragments.length && Number.isFinite(fragments[0].start)) {
-          return fragments[0].start;
-        }
-        return null;
-      }
-      return video.seekable.length ? video.seekable.start(0) : null;
-    }
-
     let pausedDuringSession = false;
     video.addEventListener('pause', () => { pausedDuringSession = true; });
     video.addEventListener('play', () => {
       if (!pausedDuringSession) return;
-      const start = windowStart();
+      const start = liveWindowStart();
       if (start === null || video.currentTime >= start) return;
       video.currentTime = start + 0.1;
     });
   }
 
   // ============================================================
-  // Program Time Remaining
+  // Live Program Timeline
   // ============================================================
 
-  // Live remaining time comes from the EPG program end, not from the
-  // DVR segment window. The broadcast continues while paused, so the
-  // countdown follows wall-clock time.
-  function setupProgramRemaining() {
-    if (cfg.isVod || !cfg.programEnd) return;
-    const el = document.getElementById('program-remaining');
-    if (!el) return;
-    let timerId;
-    const update = () => {
-      const remaining = cfg.programEnd - Date.now() / 1000;
-      if (remaining <= 0) {
-        el.classList.add('hidden');
-        clearInterval(timerId);
-        return;
+  // Live progress spans the scheduled EPG program, not the DVR segment
+  // window: elapsed and remaining come from the program's start and
+  // stop times, so pausing or rewinding moves the position back through
+  // the program instead of restarting a segment counter.
+  function hasLiveProgram() {
+    return !cfg.isVod && programEnd > programStart;
+  }
+
+  // Wall-clock time of the frame on screen. Live playback trails the
+  // broadcast by however far the current position sits behind the live
+  // edge, which is also how a paused picture keeps its place.
+  function playbackWallClock() {
+    const now = Date.now() / 1000;
+    const edge = liveEdge();
+    if (edge === null || !Number.isFinite(video.currentTime)) return now;
+    return now - Math.max(0, edge - video.currentTime);
+  }
+
+  // Seek to a moment of the broadcast, clamped to what the DVR still holds.
+  function seekToWallClock(target) {
+    const edge = liveEdge();
+    if (edge === null) return;
+    const start = liveWindowStart();
+    const oldest = start === null ? 0 : start + 0.1;
+    const position = edge - (Date.now() / 1000 - target);
+    video.currentTime = Math.min(Math.max(position, oldest), edge);
+  }
+
+  // The guide only supplies the program that was on at page load, so
+  // pull the next one once its stop time passes; a gap in the listings
+  // is retried at a slow cadence.
+  async function refreshProgram() {
+    const now = Date.now() / 1000;
+    if (programRefreshInFlight || !cfg.streamId || now < programRetryAt) return;
+    programRefreshInFlight = true;
+    programRetryAt = now + 30;
+    try {
+      const resp = await fetch('/api/live/program/' + encodeURIComponent(cfg.streamId));
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data.end || data.end <= Date.now() / 1000) return;
+      programStart = data.start;
+      programEnd = data.end;
+      const title = document.getElementById('program-title');
+      if (title) title.textContent = data.title ? ' \u2014 ' + data.title : '';
+      const desc = document.getElementById('program-desc');
+      if (desc) {
+        desc.textContent = data.desc || '';
+        desc.classList.toggle('hidden', !data.desc);
       }
-      el.textContent = formatTime(remaining) + ' left';
-      el.classList.remove('hidden');
+      updateProgress();
+    } catch (e) {
+      // Keep the current listing and try again on a later tick.
+    } finally {
+      programRefreshInFlight = false;
+    }
+  }
+
+  function setupLiveProgram() {
+    if (cfg.isVod) return;
+    const container = document.getElementById('progress-container');
+    // Wall-clock driven, so the bar keeps up while paused or stalled.
+    const tick = () => {
+      // Channels the guide knows nothing about stay off the timeline.
+      if (programEnd && Date.now() / 1000 >= programEnd) refreshProgram();
+      container?.classList.toggle('hidden', !hasLiveProgram());
+      if (hasLiveProgram()) updateProgress();
     };
-    update();
-    timerId = setInterval(update, 1000);
+    tick();
+    setInterval(tick, 1000);
+  }
+
+  // ============================================================
+  // Progress Bar
+  // ============================================================
+
+  function renderProgress(pct, currentText, rightText) {
+    const played = document.getElementById('progress-played');
+    const handle = document.getElementById('progress-handle');
+    const timeCurrent = document.getElementById('time-current');
+    const timeDuration = document.getElementById('time-duration');
+    if (played) played.style.width = pct + '%';
+    if (handle) handle.style.left = pct + '%';
+    if (timeCurrent) timeCurrent.textContent = currentText;
+    if (timeDuration) timeDuration.textContent = rightText;
+  }
+
+  // Shade the part of the program the DVR can still seek to.
+  function renderDvrWindow(length) {
+    const buffered = document.getElementById('progress-buffered');
+    if (!buffered) return;
+    const edge = liveEdge();
+    const start = liveWindowStart();
+    const now = Date.now() / 1000;
+    const live = Math.min(Math.max(now - programStart, 0), length);
+    const oldest = edge === null || start === null
+      ? live
+      : Math.min(Math.max(now - (edge - start) - programStart, 0), length);
+    buffered.style.left = (oldest / length) * 100 + '%';
+    buffered.style.width = ((live - oldest) / length) * 100 + '%';
+  }
+
+  function updateProgress() {
+    if (hasLiveProgram()) {
+      const length = programEnd - programStart;
+      const elapsed = Math.min(Math.max(playbackWallClock() - programStart, 0), length);
+      renderProgress((elapsed / length) * 100, formatTime(elapsed), '-' + formatTime(length - elapsed));
+      renderDvrWindow(length);
+      return;
+    }
+    const duration = totalDuration || video.duration || 0;
+    if (!duration) return;
+    const currentTime = video.currentTime + seekOffset;
+    renderProgress((currentTime / duration) * 100, formatTime(currentTime), formatTime(duration));
   }
 
   // ============================================================
@@ -1220,22 +1326,6 @@
 
     // Progress bar
     const progressBar = document.getElementById('progress-bar');
-    const progressPlayed = document.getElementById('progress-played');
-    const progressHandle = document.getElementById('progress-handle');
-    const progressBuffered = document.getElementById('progress-buffered');
-    const timeCurrent = document.getElementById('time-current');
-    const timeDuration = document.getElementById('time-duration');
-
-    function updateProgress() {
-      const duration = totalDuration || video.duration || 0;
-      if (!duration) return;
-      const currentTime = video.currentTime + seekOffset;
-      const pct = (currentTime / duration) * 100;
-      if (progressPlayed) progressPlayed.style.width = pct + '%';
-      if (progressHandle) progressHandle.style.left = pct + '%';
-      if (timeCurrent) timeCurrent.textContent = formatTime(currentTime);
-      if (timeDuration) timeDuration.textContent = formatTime(duration);
-    }
 
     video.addEventListener('timeupdate', updateProgress);
     video.addEventListener('loadedmetadata', () => {
@@ -1249,6 +1339,12 @@
     progressBar?.addEventListener('click', async (e) => {
       const rect = progressBar.getBoundingClientRect();
       const pct = (e.clientX - rect.left) / rect.width;
+      // Live clicks land on a moment of the broadcast, not a file offset.
+      if (hasLiveProgram()) {
+        seekToWallClock(programStart + pct * (programEnd - programStart));
+        updateProgress();
+        return;
+      }
       const duration = totalDuration || video.duration || 0;
       if (!duration) return;
       const targetTime = pct * duration;
@@ -1416,7 +1512,7 @@
     applyCaptionStyles();
     setupPositionTracking();
     setupLiveDvrResume();
-    setupProgramRemaining();
+    setupLiveProgram();
     setupKeyboardControls();
     setupButtonHandlers();
     setupActivityTracking();
