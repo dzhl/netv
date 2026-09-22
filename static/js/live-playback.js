@@ -49,6 +49,12 @@
       return this.enqueue(() => this.release());
     }
 
+    detach() {
+      // The receiver now owns this session; page-close cleanup must not stop it.
+      ++this.generation;
+      this.sessionId = null;
+    }
+
     reopen() {
       this.closed = false;
     }

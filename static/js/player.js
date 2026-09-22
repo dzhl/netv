@@ -35,6 +35,7 @@
   let programEnd = cfg.programEnd || 0;
   let programRefreshInFlight = false;
   let programRetryAt = 0;
+  let castController = null;
 
   // ============================================================
   // Utilities
@@ -365,6 +366,7 @@
   // ============================================================
 
   function savePosition() {
+    if (castController?.active) return;
     const actualTime = video.currentTime + seekOffset;
     if (!cfg.isVod || actualTime < 5) return;
     if (video.currentTime < 1 && seekOffset > 0) return;
@@ -606,7 +608,7 @@
   // ============================================================
 
   async function cleanupTranscode() {
-    if (document.pictureInPictureElement === video) return;
+    if (document.pictureInPictureElement === video && !castController?.active) return;
     adaptivePlayback?.destroy();
     adaptivePlayback = null;
     adaptiveSession = null;
@@ -714,6 +716,7 @@
     showLoading();
     try {
       await cleanupTranscode();
+      if (castController?.active) return;
       let url = '/transcode/start?url=' + encodeURIComponent(cfg.rawUrl) + '&content_type=' + cfg.streamType;
       if (cfg.seriesId) url += '&series_id=' + cfg.seriesId;
       if (cfg.episodeId) url += '&episode_id=' + cfg.episodeId;
@@ -908,6 +911,7 @@
 
   function setupKeyboardControls() {
     document.addEventListener('keydown', (e) => {
+      if (castController?.active || document.getElementById('cast-dialog')?.open) return;
       // In seek input: allow player hotkeys, block other non-time chars
       if (e.target.id === 'seek-input') {
         const passthrough = ['j', 'm', 'f', ' ', 'k', 'c', 'i', 'Escape'];
@@ -1390,112 +1394,35 @@
   // ============================================================
 
   function setupCast() {
-    if (!cfg.isHttps) return;
-    const castBtn = document.getElementById('cast-btn');
-    if (!castBtn) return;
-
-    function getCastUrl() {
-      const host = cfg.castHost || window.location.host;
-      const proto = window.location.protocol;
-      if (transcodeSessionId) {
-        const path = transcodePlaylist || '/transcode/' + transcodeSessionId + '/stream.m3u8';
-        return proto + '//' + host + path;
-      }
-      if (cfg.rawUrl.includes('localhost') || cfg.rawUrl.includes('127.0.0.1')) {
-        return cfg.rawUrl.replace(/localhost|127\.0\.0\.1/, host.split(':')[0]);
-      }
-      return cfg.rawUrl;
-    }
-
-    function castLog(msg) {
-      fetch('/api/cast-log', {method: 'POST', body: msg}).catch(() => {});
-    }
-
-    function initCast() {
-      cast.framework.CastContext.getInstance().setOptions({
-        receiverApplicationId: chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
-        autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED,
-      });
-      castBtn.disabled = false;
-      cast.framework.CastContext.getInstance().addEventListener(
-        cast.framework.CastContextEventType.SESSION_STATE_CHANGED, (e) => {
-          const connected = e.sessionState === cast.framework.SessionState.SESSION_STARTED ||
-                            e.sessionState === cast.framework.SessionState.SESSION_RESUMED;
-          castBtn.classList.toggle('active', connected);
-        }
-      );
-    }
-
-    function loadMediaToCast() {
-      const session = cast.framework.CastContext.getInstance().getCurrentSession();
-      if (!session) {
-        castLog('No active session');
-        return;
-      }
-      const url = getCastUrl();
-      castLog('URL: ' + url + ' isVod=' + cfg.isVod + ' seek=' + (video.currentTime + seekOffset).toFixed(1));
-      const mediaInfo = new chrome.cast.media.MediaInfo(url, 'application/x-mpegurl');
-      mediaInfo.streamType = chrome.cast.media.StreamType.LIVE;
-      mediaInfo.metadata = new chrome.cast.media.GenericMediaMetadata();
-      mediaInfo.metadata.title = cfg.mediaTitle;
-      if (chrome.cast.media.HlsSegmentFormat) mediaInfo.hlsSegmentFormat = chrome.cast.media.HlsSegmentFormat.TS;
-      if (chrome.cast.media.HlsVideoSegmentFormat) mediaInfo.hlsVideoSegmentFormat = chrome.cast.media.HlsVideoSegmentFormat.MPEG2_TS;
-      const request = new chrome.cast.media.LoadRequest(mediaInfo);
-      request.autoplay = true;
-      request.currentTime = video.currentTime + seekOffset;
-      castLog('streamType=' + mediaInfo.streamType);
-      session.loadMedia(request).then(
-        () => {
-          castLog('Media loaded OK');
-          video.pause();
-          const media = session.getMediaSession();
-          if (media) {
-            media.addUpdateListener((isAlive) => {
-              if (!isAlive) { castLog('Session ended'); return; }
-              const ps = media.playerState;
-              const idle = media.idleReason;
-              castLog('State: ' + ps + (idle ? ' (' + idle + ')' : ''));
-            });
+    castController = window.NetvCast.setup({
+      serverAddress: cfg.castHost,
+      getMedia: async () => {
+        const position = video.currentTime + seekOffset;
+        if (!transcodeSessionId) {
+          await startTranscode();
+          if (!transcodeSessionId) throw new Error('Could not prepare an HLS stream for the TV.');
+          if (cfg.isVod && position > 0) {
+            if (!await handleSeekToPosition(position)) throw new Error('Could not prepare the current movie position.');
           }
-        },
-        (e) => {
-          const code = e?.code || 'unknown';
-          const desc = e?.description || e?.message || String(e);
-          castLog('LOAD FAILED: code=' + code + ' desc=' + desc);
         }
-      );
-    }
-
-    let castDialogClosedAt = 0;
-    castBtn.addEventListener('click', function(e) {
-      e.stopPropagation();
-      e.preventDefault();
-      this.blur();
-      settingsMenu.classList.remove('open');
-      if (!window.cast || !cast.framework) {
-        alert('Cast not available.\n\nTry accessing via your LAN IP instead of 0.0.0.0');
-        return;
-      }
-      if (Date.now() - castDialogClosedAt < 1000) return;
-      const ctx = cast.framework.CastContext.getInstance();
-      ctx.requestSession().then(
-        () => { castDialogClosedAt = Date.now(); loadMediaToCast(); },
-        () => { castDialogClosedAt = Date.now(); }
-      );
+        return {
+          session_id: transcodeSessionId, title: cfg.mediaTitle,
+          current_time: Math.max(0, position - seekOffset),
+        };
+      },
+      onStarted: async status => {
+        video.pause();
+        if (document.pictureInPictureElement === video) {
+          await document.exitPictureInPicture().catch(e => console.warn('[CAST] Could not close picture-in-picture:', e));
+        }
+        if (status.session_id === transcodeSessionId) transcodeSession.detach();
+        await cleanupTranscode();
+        video.removeAttribute('src');
+        video.load();
+        hideLoading();
+        error.classList.add('hidden');
+      },
     });
-
-    let pollCount = 0;
-    const castPoll = setInterval(() => {
-      if (window.cast && cast.framework) {
-        clearInterval(castPoll);
-        console.log('[CAST] SDK ready');
-        initCast();
-      } else if (++pollCount > 30) {
-        clearInterval(castPoll);
-        console.log('[CAST] SDK timeout');
-        castBtn.disabled = false;
-      }
-    }, 100);
   }
 
   // ============================================================
@@ -1543,24 +1470,27 @@
     window.addEventListener('beforeunload', cleanupTranscodeSync);
     window.addEventListener('pagehide', cleanupTranscodeSync);
     window.addEventListener('pageshow', event => {
-      if (event.persisted && transcodeSession.closed) {
+      if (event.persisted && transcodeSession.closed && !castController?.active) {
         transcodeSession.reopen();
         if (isTranscoding) startTranscode();
         else playWithUrl(cfg.rawUrl);
       }
     });
 
-    // Start playback based on transcode mode
-    if (cfg.transcodeMode === 'always') {
-      startTranscode();
-    } else if (cfg.transcodeMode === 'never') {
-      playWithUrl(cfg.rawUrl);
-    } else {
-      playWithUrl(cfg.rawUrl, () => {
-        error.classList.add('hidden');
+    // Do not open a second provider connection when returning to an active cast.
+    castController.ready.then(() => {
+      if (castController.active) return;
+      if (cfg.transcodeMode === 'always') {
         startTranscode();
-      });
-    }
+      } else if (cfg.transcodeMode === 'never') {
+        playWithUrl(cfg.rawUrl);
+      } else {
+        playWithUrl(cfg.rawUrl, () => {
+          error.classList.add('hidden');
+          startTranscode();
+        });
+      }
+    });
   }
 
   init();

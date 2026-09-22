@@ -35,7 +35,8 @@ function element() {
     async emit(name, value = {}) {
       for (const handler of listeners.get(name) || []) await handler(value);
     },
-    setAttribute() {}, removeAttribute() {}, appendChild() {},
+    setAttribute() {}, removeAttribute() {}, appendChild() {}, replaceChildren() {},
+    showModal() { this.open = true; }, close() { this.open = false; },
     getBoundingClientRect: () => ({ left: 0, width: 100, top: 0, height: 4 }),
   };
 }
@@ -43,12 +44,14 @@ function element() {
 async function player({
   isVod = false, native = false, direct = false,
   programStart = 0, programEnd = 0, nextProgram = null,
+  castFailure = false, initialCast = null, seekOffset = 0, statusReady = null,
 } = {}) {
   const elements = new Map();
   const getElementById = id => {
     if (!elements.has(id)) elements.set(id, element());
     return elements.get(id);
   };
+  for (const id of ['cast-ip', 'cast-overlay', 'cast-state']) getElementById(id);
   const video = getElementById('video');
   const seekable = { length: 1, start: () => 0, end: () => 12 };
   Object.assign(video, {
@@ -60,6 +63,7 @@ async function player({
     textTracks: Object.assign([], { addEventListener() {} }),
     play: async () => { video.paused = false; },
     pause: () => { video.paused = true; },
+    load() {},
   });
   const timers = new Map();
   let timerId = 0;
@@ -70,6 +74,7 @@ async function player({
   let sessionNumber = 0;
   let rendition = 'low';
   let windowStart = 0;
+  let castStatus = initialCast || { active: false };
   const engines = [];
   class Hls {
     static Events = {
@@ -129,7 +134,7 @@ async function player({
     querySelectorAll: () => [], visibilityState: 'visible',
   });
   const context = createContext({
-    window, document, Hls, URL, Blob, AbortController, Date,
+    window, document, Hls, URL, Blob, AbortController, AbortSignal, Date,
     navigator: { sendBeacon: url => { beacons.push(url); return true; } },
     performance: { now: () => 1000 },
     localStorage: { getItem: () => null, setItem() {} },
@@ -138,11 +143,12 @@ async function player({
     console: { log() {}, warn: (...args) => errors.push(args), error: (...args) => errors.push(args) },
     fetch: async (url, options = {}) => {
       calls.push({ url, options });
-      let data = {};
+      let data = { active: false };
       if (url.startsWith('/transcode/start?')) {
         const id = `session${++sessionNumber}`;
         data = {
           session_id: id, duration: isVod ? 3600 : 0, subtitles: [],
+          seek_offset: seekOffset,
           playlist: `/transcode/${id}/${isVod ? 'stream' : 'low'}.m3u8`,
           ...(!isVod ? { master_playlist: `/transcode/${id}/master.m3u8` } : {}),
         };
@@ -150,11 +156,26 @@ async function player({
         data = { playlist: `/transcode/session${sessionNumber}/${rendition}.m3u8` };
       } else if (url.startsWith('/api/live/program/')) {
         data = nextProgram || { title: '', desc: '', start: 0, end: 0 };
+      } else if (url === '/api/cast/status') {
+        if (statusReady) await statusReady;
+        data = castStatus;
+      } else if (url === '/api/cast/devices') {
+        data = { devices: [] };
+      } else if (url === '/api/cast/start') {
+        if (castFailure) return { ok: false, json: async () => ({ detail: 'TV could not load the stream' }) };
+        castStatus = {
+          active: true, name: 'Living room', host: '192.168.1.50',
+          state: 'PLAYING', volume: 0.5, session_id: JSON.parse(options.body).session_id,
+        };
+        data = castStatus;
+      } else if (url === '/api/cast/control') {
+        if (JSON.parse(options.body).action === 'stop') castStatus = { active: false };
+        data = castStatus;
       }
       return { ok: true, json: async () => data };
     },
   });
-  for (const script of ['live-playback.js', 'player.js']) {
+  for (const script of ['live-playback.js', 'cast.js', 'player.js']) {
     runInContext(readFileSync(join(__dirname, '../static/js', script), 'utf8'), context);
   }
   await flush();
@@ -197,6 +218,97 @@ test('web live startup and upgrades use one shared adaptive session', async () =
   assert.deepEqual(p.errors, []);
 });
 
+test('HTTP player casts a shared session and leaves it running after page close', async () => {
+  const p = await player();
+  p.elements.get('cast-ip').value = '192.168.1.50';
+  await p.elements.get('cast-form').emit('submit', { preventDefault() {} });
+  await flush();
+  const request = p.calls.find(call => call.url === '/api/cast/start');
+  assert.equal(JSON.parse(request.options.body).session_id, 'session1');
+  assert.equal(JSON.parse(request.options.body).server_url, 'http://netv.test');
+  assert.equal(p.video.paused, true);
+  assert.equal(p.elements.get('cast-overlay').classList.contains('hidden'), false);
+  assert.equal(p.elements.get('cast-picker').classList.contains('hidden'), true);
+  await p.window.emit('pagehide');
+  assert.deepEqual(p.beacons, []);
+  assert.equal(p.calls.some(call => call.options.method === 'DELETE'), false);
+});
+
+test('failed casting keeps local playback and exposes the receiver error', async () => {
+  const p = await player({ castFailure: true });
+  p.elements.get('cast-ip').value = '192.168.1.50';
+  await p.elements.get('cast-form').emit('submit', { preventDefault() {} });
+  await flush();
+  assert.equal(p.elements.get('cast-error').textContent, 'TV could not load the stream');
+  assert.equal(p.elements.get('cast-overlay').classList.contains('hidden'), true);
+  assert.equal(p.video.paused, false);
+  await p.window.emit('pagehide');
+  assert.deepEqual(p.beacons, ['/transcode/session1/stop?force=true']);
+});
+
+test('direct live playback prepares local HLS before casting', async () => {
+  const p = await player({ direct: true });
+  p.elements.get('cast-ip').value = '192.168.1.50';
+  await p.elements.get('cast-form').emit('submit', { preventDefault() {} });
+  await flush();
+  const startIndex = p.calls.findIndex(call => call.url.startsWith('/transcode/start?'));
+  const castIndex = p.calls.findIndex(call => call.url === '/api/cast/start');
+  assert.ok(startIndex >= 0 && castIndex > startIndex);
+  assert.equal(p.video.paused, true);
+});
+
+test('device discovery offers manual fallback and controls use authenticated API', async () => {
+  const p = await player();
+  await p.elements.get('cast-btn').emit('click', { stopPropagation() {} });
+  await flush();
+  assert.match(p.elements.get('cast-discovery').textContent, /No devices found/);
+  p.elements.get('cast-ip').value = '192.168.1.50';
+  await p.elements.get('cast-form').emit('submit', { preventDefault() {} });
+  await flush();
+  await p.elements.get('cast-pause').emit('click');
+  await flush();
+  assert.deepEqual(JSON.parse(p.calls.at(-1).options.body), { action: 'pause' });
+  await p.elements.get('cast-stop').emit('click');
+  await flush();
+  assert.equal(p.elements.get('cast-state').textContent, 'Casting has ended.');
+  assert.equal(p.elements.get('cast-local').textContent, 'Play here');
+});
+
+test('returning to a player restores cast controls without starting local playback', async () => {
+  const p = await player({ initialCast: {
+    active: true, name: 'TV', state: 'PLAYING', volume: 0.5, session_id: 'existing-cast',
+  } });
+  assert.equal(p.elements.get('cast-overlay').classList.contains('hidden'), false);
+  assert.equal(p.video.paused, true);
+  assert.equal(p.calls.some(call => call.url.startsWith('/transcode/start?')), false);
+});
+
+test('local startup waits for delayed cast status instead of consuming another stream slot', async () => {
+  let resolve;
+  const statusReady = new Promise(done => { resolve = done; });
+  const p = await player({ statusReady, initialCast: {
+    active: true, name: 'TV', state: 'PLAYING', volume: 0.5, session_id: 'existing-cast',
+  } });
+  assert.equal(p.calls.some(call => call.url.startsWith('/transcode/start?')), false);
+  resolve();
+  await flush();
+  assert.equal(p.elements.get('cast-overlay').classList.contains('hidden'), false);
+  assert.equal(p.calls.some(call => call.url.startsWith('/transcode/start?')), false);
+});
+
+test('movie handoff sends the HLS-relative position rather than adding the seek offset', async () => {
+  const p = await player({ isVod: true, seekOffset: 120 });
+  p.video.currentTime = 90;
+  p.elements.get('cast-ip').value = '192.168.1.50';
+  await p.elements.get('cast-form').emit('submit', { preventDefault() {} });
+  await flush();
+  const request = p.calls.find(call => call.url === '/api/cast/start');
+  assert.equal(JSON.parse(request.options.body).current_time, 90);
+  assert.equal(p.video.paused, true);
+  await p.window.emit('pagehide');
+  assert.deepEqual(p.beacons, []);
+});
+
 test('web restart stops the live session before starting a replacement', async () => {
   const p = await player();
   await p.elements.get('menu-restart').emit('click');
@@ -234,7 +346,7 @@ test('direct playback does not opt into server transcoding or adaptive health', 
   const p = await player({ direct: true });
   assert.deepEqual(p.engines[0].sources, ['https://provider.example/live.m3u8']);
   assert.equal(p.engines[0].config.liveSyncDurationCount, 3);
-  assert.deepEqual(p.calls, []);
+  assert.deepEqual(p.calls.map(call => call.url), ['/api/cast/status']);
   assert.deepEqual(p.errors, []);
 });
 
