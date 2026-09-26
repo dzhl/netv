@@ -25,17 +25,32 @@ pressing Select again returns to fullscreen without restarting playback. Video
 retains its original aspect ratio. The remote's Play/Pause button works without
 showing a transport overlay.
 
-Neither Mac nor TV displays a native play/pause toolbar or full-width title
-overlay. TV has no fullscreen button or percentage/volume panel; use the Siri
-Remote's hardware volume keys to control the connected TV/receiver. Mac retains
-its fullscreen button and bottom-left volume slider. App volume carries across
-channel changes and adaptive quality switches.
+Mac shows a slim neTV control bar (play/pause, LIVE, volume, and AirPlay) along
+the bottom of the video on hover; it stays visible while paused. AVKit's own
+inline controls are not used because they crashed with live streams;
+TV displays no native transport toolbar or full-width title overlay. TV has no
+fullscreen button or percentage/volume panel; use the Siri Remote's hardware
+volume keys to control the connected TV/receiver. Mac retains its fullscreen
+button. App volume carries across channel changes and adaptive quality switches.
 
 Category names and ordering follow the web settings. Use the updated neTV server
 for category metadata and device-local program times; older servers remain
 playable through All Channels. The Apple client loads every guide page rather
 than stopping at the first 500 channels. Use the refresh button to reload
 channels and the three-hour schedule.
+
+## AirPlay
+
+On iPhone, iPad, and Mac, the player has an **AirPlay** button (top right on
+iPhone/iPad, in the hover control bar on Mac). It sends video to an Apple TV or an AirPlay 2
+TV, which fetches the stream from neTV itself. Sign in with the server's LAN
+address, such as `http://192.168.1.10:8000`: a TV cannot reach `localhost`, and
+the Mac app warns when AirPlay is active with a loopback server address. While
+AirPlaying, the app keeps the current quality rather than switching renditions,
+because replacing the player would drop the AirPlay route.
+
+tvOS does not let apps AirPlay video from an Apple TV to another screen. To send
+Apple TV audio to AirPlay speakers, use the system Control Center.
 
 ## Open and run
 

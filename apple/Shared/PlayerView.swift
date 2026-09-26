@@ -1,4 +1,5 @@
 import AVKit
+import Combine
 #if os(iOS)
 import AVFAudio
 #endif
@@ -12,6 +13,8 @@ struct PlayerView: View {
     @State private var player: AVPlayer?
     @State private var errorMessage: String?
     @State private var quality: String?
+    @State private var airPlayActive = false
+    @State private var airPlayHost: String?
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.netv",
         category: "Player"
@@ -53,6 +56,11 @@ struct PlayerView: View {
                             .padding(.vertical, 4)
                             .background(.white.opacity(0.18), in: Capsule())
                     }
+                    if let player {
+                        AirPlayButton(player: player)
+                            .frame(width: 36, height: 36)
+                            .accessibilityLabel("AirPlay")
+                    }
                 }
                 .padding()
                 .background(
@@ -69,9 +77,16 @@ struct PlayerView: View {
         }
         #if os(macOS) || os(tvOS)
         #if os(macOS)
-        .overlay(alignment: .bottomLeading) {
-            if player != nil {
-                MacVolumeControl(volume: $model.playbackVolume)
+        .overlay(alignment: .bottom) {
+            if let player {
+                MacControlBar(
+                    player: player, volume: $model.playbackVolume, airPlayActive: airPlayActive
+                )
+            }
+        }
+        .overlay(alignment: .top) {
+            if airPlayActive, let airPlayHost {
+                AirPlayHostWarning(host: airPlayHost)
                     .padding(12)
             }
         }
@@ -120,6 +135,7 @@ struct PlayerView: View {
             player?.pause()
             player = nil
             quality = nil
+            airPlayActive = false
             if let sessionID = activeSessionID {
                 Task { await model.stopPlayback(sessionID: sessionID) }
             }
@@ -146,6 +162,10 @@ struct PlayerView: View {
                 item.preferredForwardBufferDuration = 12
                 var currentPlayer = AVPlayer(playerItem: item)
                 currentPlayer.isMuted = false
+                #if os(iOS)
+                currentPlayer.usesExternalPlaybackWhileExternalScreenIsActive = true
+                #endif
+                airPlayHost = configuration.url.host.flatMap { isLoopback($0) ? $0 : nil }
                 #if os(macOS) || os(tvOS)
                 currentPlayer.volume = Float(model.playbackVolume)
                 #else
@@ -158,6 +178,12 @@ struct PlayerView: View {
                 while !Task.isCancelled {
                     try await Task.sleep(for: .seconds(2))
                     quality = qualityLabel(for: item.presentationSize)
+                    #if os(iOS) || os(macOS)
+                    airPlayActive = currentPlayer.isExternalPlaybackActive
+                    // The TV fetches segments itself, which keeps the session alive. Swapping
+                    // players for a quality change would drop the AirPlay route.
+                    if airPlayActive { continue }
+                    #endif
                     guard let sessionID = activeSessionID else { continue }
                     // Pauses aren't stalls. Reporting healthy samples also resets the
                     // server's consecutive-poor-playback window and keeps it alive.
@@ -283,34 +309,158 @@ private struct PlayerController: NSViewRepresentable {
     }
 }
 
-private struct MacVolumeControl: View {
+/// A slim bar of our own: AVKit's inline controls crashed with neTV's live streams.
+/// It appears on hover and stays visible while paused.
+private struct MacControlBar: View {
+    let player: AVPlayer
     @Binding var volume: Double
+    let airPlayActive: Bool
+
+    @State private var isPlaying = true
+    @State private var isHovering = false
+    @State private var lastActivity = Date.distantPast
 
     var body: some View {
-        HStack(spacing: 10) {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let visible = !isPlaying || (isHovering && context.date.timeIntervalSince(lastActivity) < 3)
+            bar
+                .opacity(visible ? 1 : 0)
+                .animation(.easeInOut(duration: 0.2), value: visible)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .contentShape(Rectangle())
+        .onContinuousHover { phase in
+            if case .active = phase {
+                isHovering = true
+                lastActivity = Date()
+            } else {
+                isHovering = false
+            }
+        }
+        .onReceive(player.publisher(for: \.timeControlStatus)) { status in
+            isPlaying = status != .paused
+        }
+    }
+
+    private var bar: some View {
+        HStack(spacing: 12) {
+            Button {
+                if player.timeControlStatus == .paused { player.play() } else { player.pause() }
+                lastActivity = Date()
+            } label: {
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 20, height: 20)
+            }
+            .buttonStyle(.plain)
+            .help(isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(isPlaying ? "Pause" : "Play")
+
+            HStack(spacing: 4) {
+                Circle().fill(.red).frame(width: 6, height: 6)
+                Text("LIVE").font(.caption2.weight(.bold))
+            }
+            .accessibilityElement(children: .combine)
+
+            Spacer(minLength: 8)
+
             Image(systemName: volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                .font(.system(size: 13))
+                .font(.system(size: 12))
                 .frame(width: 16)
                 .accessibilityHidden(true)
-            Slider(value: $volume, in: 0...1)
-                .labelsHidden()
-                .controlSize(.small)
-                .tint(.white)
-                .frame(width: 90)
-                .accessibilityLabel("Volume")
-                .accessibilityValue("\(Int(volume * 100)) percent")
-            Text("\(Int(volume * 100))%")
-                .font(.caption2.monospacedDigit())
-                .frame(width: 30, alignment: .trailing)
-                .accessibilityHidden(true)
+            Slider(value: $volume, in: 0...1) { editing in
+                if editing { lastActivity = Date() }
+            }
+            .labelsHidden()
+            .controlSize(.mini)
+            .tint(.white)
+            .frame(width: 70)
+            .accessibilityLabel("Volume")
+            .accessibilityValue("\(Int(volume * 100)) percent")
+
+            AirPlayButton(player: player, active: airPlayActive)
+                .frame(width: 22, height: 22)
+                .help("AirPlay")
+                .accessibilityLabel("AirPlay")
         }
         .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(
+            LinearGradient(colors: [.clear, .black.opacity(0.8)], startPoint: .top, endPoint: .bottom)
+        )
+    }
+}
+
+/// macOS's route picker always draws the AirPlay audio glyph, so its button is made
+/// transparent and the video glyph is drawn on top without taking the click.
+private struct AirPlayButton: View {
+    let player: AVPlayer
+    let active: Bool
+
+    var body: some View {
+        ZStack {
+            RoutePicker(player: player)
+            Image(systemName: "airplayvideo")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(active ? Color.blue : Color.white)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+/// Routes this player's video; AVRoutePickerView.player is macOS-only.
+private struct RoutePicker: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.isRoutePickerButtonBordered = false
+        for state in [AVRoutePickerView.ButtonState.normal, .normalHighlighted, .active, .activeHighlighted] {
+            view.setRoutePickerButtonColor(.clear, for: state)
+        }
+        view.player = player
+        return view
+    }
+
+    func updateNSView(_ view: AVRoutePickerView, context: Context) {
+        if view.player !== player {
+            view.player = player
+        }
+    }
+}
+
+private struct AirPlayHostWarning: View {
+    let host: String
+
+    var body: some View {
+        Label(
+            "The TV can't reach \(host). Sign in with this Mac's LAN address, such as http://192.168.1.10:8000.",
+            systemImage: "exclamationmark.triangle.fill"
+        )
+        .font(.caption)
+        .foregroundStyle(.white)
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
+        .padding(.vertical, 8)
+        .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 10))
+        .allowsHitTesting(false)
     }
 }
 #elseif os(iOS)
+private struct AirPlayButton: UIViewRepresentable {
+    let player: AVPlayer
+
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.prioritizesVideoDevices = true
+        view.tintColor = .white
+        view.activeTintColor = .systemBlue
+        return view
+    }
+
+    func updateUIView(_ view: AVRoutePickerView, context: Context) {}
+}
+
 private struct PlayerController: UIViewControllerRepresentable {
     let player: AVPlayer
 
@@ -347,6 +497,10 @@ private struct PlayerController: UIViewControllerRepresentable {
 }
 
 #endif
+
+private func isLoopback(_ host: String) -> Bool {
+    host == "localhost" || host == "::1" || host.hasPrefix("127.")
+}
 
 /// Classify on the larger of the frame height and the height a 16:9 frame of this width
 /// would have: a letterboxed 1920x800 frame is a 1080p stream, not a 720p one.
