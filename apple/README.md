@@ -22,13 +22,15 @@ On TV, the navigation rail also has Search and Refresh controls. Select a channe
 once to play it in the preview, then select the same channel again to fill the
 display. Back/Menu returns to the guide and focuses the playing channel, so
 pressing Select again returns to fullscreen without restarting playback. Video
-retains its original aspect ratio. The remote's Play/Pause button works without
-showing a transport overlay.
+retains its original aspect ratio. In fullscreen, the remote's Play/Pause button
+or a click on the touchpad pauses and resumes; swiping just shows the bar. A slim
+status bar (play/pause, LIVE, channel and program) appears for a few seconds on
+remote activity and stays visible while paused.
 
 Mac shows a slim neTV control bar (play/pause, LIVE, volume, and AirPlay) along
 the bottom of the video on hover; it stays visible while paused. AVKit's own
-inline controls are not used because they crashed with live streams;
-TV displays no native transport toolbar or full-width title overlay. TV has no
+inline controls are not used because they crashed with live streams.
+TV does not use AVKit's native transport controls either. TV has no
 fullscreen button or percentage/volume panel; use the Siri Remote's hardware
 volume keys to control the connected TV/receiver. Mac retains its fullscreen
 button. App volume carries across channel changes and adaptive quality switches.
