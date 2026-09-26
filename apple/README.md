@@ -25,11 +25,11 @@ pressing Select again returns to fullscreen without restarting playback. Video
 retains its original aspect ratio. The remote's Play/Pause button works without
 showing a transport overlay.
 
-Neither Mac nor TV displays a native play/pause toolbar or full-width title
-overlay. TV has no fullscreen button or percentage/volume panel; use the Siri
-Remote's hardware volume keys to control the connected TV/receiver. Mac retains
-its fullscreen button and bottom-left volume slider. App volume carries across
-channel changes and adaptive quality switches.
+Mac uses the native macOS player controls (play/pause, volume, and AirPlay);
+TV displays no native transport toolbar or full-width title overlay. TV has no
+fullscreen button or percentage/volume panel; use the Siri Remote's hardware
+volume keys to control the connected TV/receiver. Mac retains its fullscreen
+button. App volume carries across channel changes and adaptive quality switches.
 
 Category names and ordering follow the web settings. Use the updated neTV server
 for category metadata and device-local program times; older servers remain
@@ -40,7 +40,7 @@ channels and the three-hour schedule.
 ## AirPlay
 
 On iPhone, iPad, and Mac, the player has an **AirPlay** button (top right on
-iPhone/iPad, bottom right on Mac). It sends video to an Apple TV or an AirPlay 2
+iPhone/iPad, in the native player controls on Mac). It sends video to an Apple TV or an AirPlay 2
 TV, which fetches the stream from neTV itself. Sign in with the server's LAN
 address, such as `http://192.168.1.10:8000`: a TV cannot reach `localhost`, and
 the Mac app warns when AirPlay is active with a loopback server address. While

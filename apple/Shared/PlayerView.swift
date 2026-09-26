@@ -23,7 +23,11 @@ struct PlayerView: View {
         ZStack {
             Color.black
             if let player {
+                #if os(macOS)
+                PlayerController(player: player, volume: $model.playbackVolume)
+                #else
                 PlayerController(player: player)
+                #endif
             } else if let errorMessage {
                 ContentUnavailableView(
                     "Unable to Play",
@@ -76,26 +80,10 @@ struct PlayerView: View {
         }
         #if os(macOS) || os(tvOS)
         #if os(macOS)
-        .overlay(alignment: .bottomLeading) {
-            if player != nil {
-                MacVolumeControl(volume: $model.playbackVolume)
+        .overlay(alignment: .top) {
+            if airPlayActive, let airPlayHost {
+                AirPlayHostWarning(host: airPlayHost)
                     .padding(12)
-            }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if let player {
-                AirPlayButton(player: player)
-                    .frame(width: 28, height: 28)
-                    .padding(6)
-                    .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
-                    .padding(12)
-                    .help("AirPlay")
-                    .accessibilityLabel("AirPlay")
-            }
-        }
-        .overlay {
-            if airPlayActive {
-                AirPlayStatus(unreachableHost: airPlayHost)
             }
         }
         #endif
@@ -299,93 +287,63 @@ struct PlayerView: View {
 }
 
 #if os(macOS)
+/// Native controls supply the system AirPlay button and volume slider. The slider
+/// writes back to the app volume so it carries across channel and quality changes.
 private struct PlayerController: NSViewRepresentable {
     let player: AVPlayer
+    @Binding var volume: Double
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
-        view.controlsStyle = .none
+        view.controlsStyle = .floating
         view.videoGravity = .resizeAspect
         view.player = player
+        context.coordinator.observe(player)
         return view
     }
 
     func updateNSView(_ view: AVPlayerView, context: Context) {
+        context.coordinator.volume = $volume
         if view.player !== player {
             view.player = player
+            context.coordinator.observe(player)
         }
     }
-}
 
-/// The picker routes this player's video; AVRoutePickerView.player is macOS-only.
-private struct AirPlayButton: NSViewRepresentable {
-    let player: AVPlayer
+    func makeCoordinator() -> Coordinator { Coordinator(volume: $volume) }
 
-    func makeNSView(context: Context) -> AVRoutePickerView {
-        let view = AVRoutePickerView()
-        view.isRoutePickerButtonBordered = false
-        view.setRoutePickerButtonColor(.white, for: .normal)
-        view.setRoutePickerButtonColor(.systemBlue, for: .active)
-        view.player = player
-        return view
-    }
+    final class Coordinator {
+        var volume: Binding<Double>
+        private var observation: NSKeyValueObservation?
 
-    func updateNSView(_ view: AVRoutePickerView, context: Context) {
-        if view.player !== player {
-            view.player = player
-        }
-    }
-}
+        init(volume: Binding<Double>) { self.volume = volume }
 
-/// AVPlayerView shows nothing while the TV plays, so say where the video went.
-private struct AirPlayStatus: View {
-    let unreachableHost: String?
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "airplayvideo")
-                .font(.system(size: 44))
-            Text("Playing on AirPlay")
-                .font(.headline)
-            if let unreachableHost {
-                Text("The TV can't reach \(unreachableHost). Sign in with this Mac's LAN address, such as http://192.168.1.10:8000.")
-                    .font(.caption)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 360)
+        func observe(_ player: AVPlayer) {
+            observation = player.observe(\.volume, options: [.new]) { [weak self] player, _ in
+                let value = Double(player.volume)
+                DispatchQueue.main.async {
+                    guard let self, abs(self.volume.wrappedValue - value) > 0.001 else { return }
+                    self.volume.wrappedValue = value
+                }
             }
         }
-        .foregroundStyle(.white)
-        .padding(24)
-        .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 14))
-        .allowsHitTesting(false)
     }
 }
 
-private struct MacVolumeControl: View {
-    @Binding var volume: Double
+private struct AirPlayHostWarning: View {
+    let host: String
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                .font(.system(size: 13))
-                .frame(width: 16)
-                .accessibilityHidden(true)
-            Slider(value: $volume, in: 0...1)
-                .labelsHidden()
-                .controlSize(.small)
-                .tint(.white)
-                .frame(width: 90)
-                .accessibilityLabel("Volume")
-                .accessibilityValue("\(Int(volume * 100)) percent")
-            Text("\(Int(volume * 100))%")
-                .font(.caption2.monospacedDigit())
-                .frame(width: 30, alignment: .trailing)
-                .accessibilityHidden(true)
-        }
+        Label(
+            "The TV can't reach \(host). Sign in with this Mac's LAN address, such as http://192.168.1.10:8000.",
+            systemImage: "exclamationmark.triangle.fill"
+        )
+        .font(.caption)
         .foregroundStyle(.white)
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
+        .padding(.vertical, 8)
+        .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 10))
+        .allowsHitTesting(false)
     }
 }
 #elseif os(iOS)
