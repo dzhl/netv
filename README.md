@@ -423,6 +423,13 @@ Chromecast's LAN IP manually. The server controls the TV, so this also works
 from iPhone browsers without Google's browser Cast SDK. No domain, HTTPS
 certificate, or internet-facing port forwarding is required.
 
+Only **Google Cast** receivers are supported: Chromecast, Google TV/Android TV,
+Nest Hub, and TVs with Chromecast built-in. Apple TV and AirPlay-only TVs
+(including many LG and Samsung models) are not Cast receivers and will not be
+listed. A "cast" button in YouTube or Netflix on those TVs uses DIAL, not
+Google Cast. Audio-only Cast speakers (Nest Mini, cast-enabled receivers) may be
+discovered but cannot display video.
+
 **neTV address reachable by the TV** must include the correct protocol and
 published port. It defaults to the browser's address and is remembered per user
 after a successful cast. Replace `localhost`, a Docker-only address, or an
@@ -502,7 +509,9 @@ sudo ./tools/uninstall-netv.sh   # Uninstall
 
 ### Development/Testing
 
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/):
+Requires Python 3.11+, [uv](https://docs.astral.sh/uv/), and FFmpeg (`ffmpeg`
+and `ffprobe` on `PATH`, e.g. `brew install ffmpeg` or `apt install ffmpeg`).
+Without FFmpeg, streams fail to start:
 
 ```bash
 git clone https://github.com/jvdillon/netv.git
