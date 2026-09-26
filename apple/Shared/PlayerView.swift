@@ -24,7 +24,10 @@ struct PlayerView: View {
             Color.black
             if let player {
                 #if os(macOS)
-                PlayerController(player: player, volume: $model.playbackVolume)
+                PlayerController(
+                    player: player, volume: $model.playbackVolume,
+                    compact: !model.isPlayerExpanded
+                )
                 #else
                 PlayerController(player: player)
                 #endif
@@ -292,10 +295,12 @@ struct PlayerView: View {
 private struct PlayerController: NSViewRepresentable {
     let player: AVPlayer
     @Binding var volume: Double
+    /// The guide preview uses the slim inline bar; fullscreen uses the floating panel.
+    let compact: Bool
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
-        view.controlsStyle = .floating
+        view.controlsStyle = compact ? .inline : .floating
         view.videoGravity = .resizeAspect
         view.player = player
         context.coordinator.observe(player)
@@ -304,6 +309,10 @@ private struct PlayerController: NSViewRepresentable {
 
     func updateNSView(_ view: AVPlayerView, context: Context) {
         context.coordinator.volume = $volume
+        let style: AVPlayerViewControlsStyle = compact ? .inline : .floating
+        if view.controlsStyle != style {
+            view.controlsStyle = style
+        }
         if view.player !== player {
             view.player = player
             context.coordinator.observe(player)

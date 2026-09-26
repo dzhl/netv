@@ -25,7 +25,8 @@ pressing Select again returns to fullscreen without restarting playback. Video
 retains its original aspect ratio. The remote's Play/Pause button works without
 showing a transport overlay.
 
-Mac uses the native macOS player controls (play/pause, volume, and AirPlay);
+Mac uses the native macOS player controls (play/pause, volume, and AirPlay): a
+slim inline bar in the guide preview and the floating panel when expanded;
 TV displays no native transport toolbar or full-width title overlay. TV has no
 fullscreen button or percentage/volume panel; use the Siri Remote's hardware
 volume keys to control the connected TV/receiver. Mac retains its fullscreen
