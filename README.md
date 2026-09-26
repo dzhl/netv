@@ -48,6 +48,7 @@ through their IPTV providers.
 - **GPU-accelerated transcoding** - NVDEC, TensorRT, and NVENC with low-latency HLS
 - **Playback resolution badge** - Web and Apple players show the actual video resolution, including 720p, 1080p, and 4K
 - **Chromecast** support over your LAN, including HTTP (server-side discovery and controls)
+- **AirPlay** from Safari on Mac, iPhone, and iPad to Apple TV and AirPlay 2 TVs
 - **Closed captions** with style customization
 - **Search** across all content (supports regex)
 - **Favorites** with drag-and-drop ordering
@@ -426,7 +427,7 @@ certificate, or internet-facing port forwarding is required.
 Only **Google Cast** receivers are supported: Chromecast, Google TV/Android TV,
 Nest Hub, and TVs with Chromecast built-in. Apple TV and AirPlay-only TVs
 (including many LG and Samsung models) are not Cast receivers and will not be
-listed. A "cast" button in YouTube or Netflix on those TVs uses DIAL, not
+listed; use [AirPlay from Safari](#airplay-from-safari) instead. A "cast" button in YouTube or Netflix on those TVs uses DIAL, not
 Google Cast. Audio-only Cast speakers (Nest Mini, cast-enabled receivers) may be
 discovered but cannot display video.
 
@@ -466,6 +467,21 @@ on 8008/8443), TV-to-neTV HTTP traffic, and UDP 5353 multicast for discovery.
 Guest Wi-Fi/client isolation or separate VLANs can block these paths. This does
 not make the Chromecast fully offline: its receiver software may still need
 internet access.
+
+### AirPlay from Safari
+
+In Safari on macOS, iOS, or iPadOS, open neTV using the server's LAN address
+(for example, `http://192.168.1.10:8000`, not `localhost`), start playback, and
+select the **AirPlay** button in the player. It sends the stream to an Apple TV
+or an AirPlay 2 TV (such as LG, Samsung, Sony, or Vizio models). No HTTPS
+certificate is required. The button is shown only in Safari; other browsers
+should use Chromecast.
+
+AirPlay switches the player from hls.js to Safari's native HLS player, because
+hls.js disables remote playback. If the stream was playing directly from the
+provider, the first tap prepares a neTV HLS stream; tap **AirPlay** again to
+choose the TV. The TV fetches the stream from neTV itself, so it must be able to
+reach neTV's port on your LAN. Keep the Safari tab open while AirPlaying.
 
 ### Debian/Ubuntu (`systemd`)
 

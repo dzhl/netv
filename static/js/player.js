@@ -36,6 +36,8 @@
   let programRefreshInFlight = false;
   let programRetryAt = 0;
   let castController = null;
+  // AirPlay needs Safari's native HLS player; hls.js disables remote playback.
+  let nativeHls = false;
 
   // ============================================================
   // Utilities
@@ -672,6 +674,17 @@
       if (!resp.ok) throw new Error('Seek failed: ' + resp.status);
       transcodedDuration = 0;
       seekOffset = targetTime;
+      if (nativeHls) {
+        video.disableRemotePlayback = false;
+        video.src = '/transcode/' + transcodeSessionId + '/stream.m3u8';
+        video.addEventListener('loadedmetadata', () => {
+          hideLoading();
+          seekInProgress = false;
+          savePosition();
+          video.play().catch(() => {});
+        }, { once: true });
+        return true;
+      }
       const hls = new Hls(createHlsConfig({forSeek: true}));
       currentHls = hls;
 
@@ -760,10 +773,11 @@
     showLoading();
     adaptivePlayback?.destroy();
     adaptivePlayback = null;
-    const useHls = Hls.isSupported() && (
+    const useHls = !nativeHls && Hls.isSupported() && (
       url.includes('.m3u8') || url.includes('/live/') || url.includes('/transcode')
     );
     if (!useHls) {
+      video.disableRemotePlayback = false;
       // Native HLS without download telemetry stays on the safe initial rendition.
       video.src = adaptiveSession ? adaptiveSession.playlist : url;
       if (adaptiveSession) startAdaptivePlayback(null);
@@ -1426,6 +1440,73 @@
   }
 
   // ============================================================
+  // AirPlay (Safari)
+  // ============================================================
+
+  function setupAirPlay() {
+    const btn = document.getElementById('airplay-btn');
+    const status = document.getElementById('airplay-status');
+    if (!btn || !window.WebKitPlaybackTargetAvailabilityEvent || !video.webkitShowPlaybackTargetPicker) return;
+    btn.classList.remove('hidden');
+    let statusTimer = null;
+    let preparing = false;
+
+    function notify(text) {
+      status.textContent = text;
+      status.classList.remove('hidden');
+      clearTimeout(statusTimer);
+      statusTimer = setTimeout(() => status.classList.add('hidden'), 8000);
+    }
+
+    video.addEventListener('webkitcurrentplaybacktargetiswirelesschanged', () => {
+      const wireless = !!video.webkitCurrentPlaybackTargetIsWireless;
+      btn.classList.toggle('active', wireless);
+      notify(wireless ? 'Playing on AirPlay.' : 'AirPlay ended. Playing here.');
+    });
+
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      if (preparing) return;
+      if (castController?.active) return notify('Stop casting to Chromecast before using AirPlay.');
+      if (['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)) {
+        return notify('Open neTV using its LAN address (not localhost) so the TV can reach it.');
+      }
+      if (nativeHls && transcodeSessionId) return video.webkitShowPlaybackTargetPicker();
+      if (transcodeSessionId) {
+        // The picker needs this click's user gesture, so switch players synchronously.
+        const position = cfg.isVod ? video.currentTime : 0;
+        nativeHls = true;
+        if (currentHls) { currentHls.destroy(); currentHls = null; }
+        playWithUrl(transcodePlaylist, null, currentSubtitles);
+        if (position > 0) {
+          video.addEventListener('loadedmetadata', () => { video.currentTime = position; }, { once: true });
+        }
+        return video.webkitShowPlaybackTargetPicker();
+      }
+      // Direct playback must first move to a neTV HLS stream the TV can fetch.
+      preparing = true;
+      btn.disabled = true;
+      notify('Preparing the stream for AirPlay...');
+      try {
+        const position = video.currentTime + seekOffset;
+        nativeHls = true;
+        await startTranscode();
+        if (!transcodeSessionId) throw new Error('no transcode session');
+        if (cfg.isVod && position > 0 && !await handleSeekToPosition(position)) {
+          throw new Error('could not restore position');
+        }
+        notify('AirPlay is ready. Tap AirPlay again to choose a TV.');
+      } catch (err) {
+        console.warn('[AIRPLAY]', err);
+        notify('Could not prepare the stream for AirPlay.');
+      } finally {
+        preparing = false;
+        btn.disabled = false;
+      }
+    });
+  }
+
+  // ============================================================
   // Initialization
   // ============================================================
 
@@ -1444,6 +1525,7 @@
     setupButtonHandlers();
     setupActivityTracking();
     setupCast();
+    setupAirPlay();
     updateTranscodeCheck();
     updateCcButton();
     updateMuteIcon();
