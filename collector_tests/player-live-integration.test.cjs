@@ -45,6 +45,7 @@ async function player({
   isVod = false, native = false, direct = false,
   programStart = 0, programEnd = 0, nextProgram = null,
   castFailure = false, initialCast = null, seekOffset = 0, statusReady = null,
+  airplay = false,
 } = {}) {
   const elements = new Map();
   const getElementById = id => {
@@ -65,6 +66,8 @@ async function player({
     pause: () => { video.paused = true; },
     load() {},
   });
+  const pickerCalls = [];
+  if (airplay) video.webkitShowPlaybackTargetPicker = () => pickerCalls.push(video.src);
   const timers = new Map();
   let timerId = 0;
   const setTimer = (fn, ms) => { timers.set(++timerId, { fn, ms }); return timerId; };
@@ -127,7 +130,8 @@ async function player({
       streamId: '1', programStart, programEnd,
       ccStyle: {}, captionsEnabled: false, sourceId: 'provider', isHttps: false,
     },
-    location: { href: 'http://netv.test/play/live/1', origin: 'http://netv.test' },
+    location: { href: 'http://netv.test/play/live/1', origin: 'http://netv.test', hostname: 'netv.test' },
+    ...(airplay ? { WebKitPlaybackTargetAvailabilityEvent: function() {} } : {}),
   });
   const document = Object.assign(element(), {
     getElementById, createElement: element, head: element(),
@@ -180,7 +184,7 @@ async function player({
   }
   await flush();
   return {
-    video, window, elements, engines, calls, beacons, errors, timers,
+    video, window, elements, engines, calls, beacons, errors, timers, pickerCalls,
     setRendition: value => { rendition = value; },
     setWindowStart: value => { windowStart = value; },
     setLiveEdge: value => { for (const engine of engines) engine.liveSyncPosition = value; },
@@ -475,4 +479,51 @@ test('the next guide program takes over when the current one ends', async () => 
   assert.equal(p.elements.get('time-current').textContent, '0:00');
   assert.equal(p.elements.get('time-duration').textContent, '-59:59');
   assert.deepEqual(p.errors, []);
+});
+
+const transcodeStarts = p => p.calls.filter(call => call.url.startsWith('/transcode/start?')).length;
+
+test('AirPlay stays hidden outside Safari', async () => {
+  const p = await player();
+  assert.equal(p.elements.get('airplay-btn').classList.contains('hidden'), true);
+});
+
+test('AirPlay moves an hls.js session to native HLS within the click gesture', async () => {
+  const p = await player({ airplay: true });
+  assert.equal(p.elements.get('airplay-btn').classList.contains('hidden'), false);
+  p.video.disableRemotePlayback = true;
+  await p.elements.get('airplay-btn').emit('click', { stopPropagation() {} });
+  assert.equal(p.engines[0].destroyed, true);
+  assert.equal(p.video.disableRemotePlayback, false);
+  assert.deepEqual(p.pickerCalls, ['/transcode/session1/low.m3u8']);
+  assert.equal(transcodeStarts(p), 1);
+  await p.elements.get('airplay-btn').emit('click', { stopPropagation() {} });
+  assert.equal(p.pickerCalls.length, 2);
+  assert.equal(p.engines.length, 1);
+  assert.deepEqual(p.errors, []);
+});
+
+test('AirPlay keeps the VOD position when switching players', async () => {
+  const p = await player({ airplay: true, isVod: true });
+  p.video.currentTime = 120;
+  await p.elements.get('airplay-btn').emit('click', { stopPropagation() {} });
+  p.video.currentTime = 0;
+  await p.video.emit('loadedmetadata');
+  assert.equal(p.video.currentTime, 120);
+  assert.deepEqual(p.pickerCalls, ['/transcode/session1/stream.m3u8']);
+});
+
+test('AirPlay prepares a neTV stream for direct playback, then opens the picker', async () => {
+  const p = await player({ airplay: true, direct: true });
+  assert.equal(transcodeStarts(p), 0);
+  await p.elements.get('airplay-btn').emit('click', { stopPropagation() {} });
+  await flush();
+  assert.equal(transcodeStarts(p), 1);
+  assert.equal(p.engines.length, 1);
+  assert.equal(p.engines[0].destroyed, true);
+  assert.equal(p.video.src, '/transcode/session1/low.m3u8');
+  assert.deepEqual(p.pickerCalls, []);
+  assert.match(p.elements.get('airplay-status').textContent, /Tap AirPlay again/);
+  await p.elements.get('airplay-btn').emit('click', { stopPropagation() {} });
+  assert.deepEqual(p.pickerCalls, ['/transcode/session1/low.m3u8']);
 });
