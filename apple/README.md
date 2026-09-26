@@ -37,6 +37,19 @@ playable through All Channels. The Apple client loads every guide page rather
 than stopping at the first 500 channels. Use the refresh button to reload
 channels and the three-hour schedule.
 
+## AirPlay
+
+On iPhone, iPad, and Mac, the player has an **AirPlay** button (top right on
+iPhone/iPad, bottom right on Mac). It sends video to an Apple TV or an AirPlay 2
+TV, which fetches the stream from neTV itself. Sign in with the server's LAN
+address, such as `http://192.168.1.10:8000`: a TV cannot reach `localhost`, and
+the Mac app warns when AirPlay is active with a loopback server address. While
+AirPlaying, the app keeps the current quality rather than switching renditions,
+because replacing the player would drop the AirPlay route.
+
+tvOS does not let apps AirPlay video from an Apple TV to another screen. To send
+Apple TV audio to AirPlay speakers, use the system Control Center.
+
 ## Open and run
 
 1. Generate the project with `cd apple && xcodegen generate`.

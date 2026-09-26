@@ -12,6 +12,8 @@ struct PlayerView: View {
     @State private var player: AVPlayer?
     @State private var errorMessage: String?
     @State private var quality: String?
+    @State private var airPlayActive = false
+    @State private var airPlayHost: String?
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.netv",
         category: "Player"
@@ -53,6 +55,11 @@ struct PlayerView: View {
                             .padding(.vertical, 4)
                             .background(.white.opacity(0.18), in: Capsule())
                     }
+                    if let player {
+                        AirPlayButton(player: player)
+                            .frame(width: 36, height: 36)
+                            .accessibilityLabel("AirPlay")
+                    }
                 }
                 .padding()
                 .background(
@@ -73,6 +80,22 @@ struct PlayerView: View {
             if player != nil {
                 MacVolumeControl(volume: $model.playbackVolume)
                     .padding(12)
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if let player {
+                AirPlayButton(player: player)
+                    .frame(width: 28, height: 28)
+                    .padding(6)
+                    .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
+                    .padding(12)
+                    .help("AirPlay")
+                    .accessibilityLabel("AirPlay")
+            }
+        }
+        .overlay {
+            if airPlayActive {
+                AirPlayStatus(unreachableHost: airPlayHost)
             }
         }
         #endif
@@ -120,6 +143,7 @@ struct PlayerView: View {
             player?.pause()
             player = nil
             quality = nil
+            airPlayActive = false
             if let sessionID = activeSessionID {
                 Task { await model.stopPlayback(sessionID: sessionID) }
             }
@@ -146,6 +170,10 @@ struct PlayerView: View {
                 item.preferredForwardBufferDuration = 12
                 var currentPlayer = AVPlayer(playerItem: item)
                 currentPlayer.isMuted = false
+                #if os(iOS)
+                currentPlayer.usesExternalPlaybackWhileExternalScreenIsActive = true
+                #endif
+                airPlayHost = configuration.url.host.flatMap { isLoopback($0) ? $0 : nil }
                 #if os(macOS) || os(tvOS)
                 currentPlayer.volume = Float(model.playbackVolume)
                 #else
@@ -158,6 +186,12 @@ struct PlayerView: View {
                 while !Task.isCancelled {
                     try await Task.sleep(for: .seconds(2))
                     quality = qualityLabel(for: item.presentationSize)
+                    #if os(iOS) || os(macOS)
+                    airPlayActive = currentPlayer.isExternalPlaybackActive
+                    // The TV fetches segments itself, which keeps the session alive. Swapping
+                    // players for a quality change would drop the AirPlay route.
+                    if airPlayActive { continue }
+                    #endif
                     guard let sessionID = activeSessionID else { continue }
                     // Pauses aren't stalls. Reporting healthy samples also resets the
                     // server's consecutive-poor-playback window and keeps it alive.
@@ -283,6 +317,50 @@ private struct PlayerController: NSViewRepresentable {
     }
 }
 
+/// The picker routes this player's video; AVRoutePickerView.player is macOS-only.
+private struct AirPlayButton: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.isRoutePickerButtonBordered = false
+        view.setRoutePickerButtonColor(.white, for: .normal)
+        view.setRoutePickerButtonColor(.systemBlue, for: .active)
+        view.player = player
+        return view
+    }
+
+    func updateNSView(_ view: AVRoutePickerView, context: Context) {
+        if view.player !== player {
+            view.player = player
+        }
+    }
+}
+
+/// AVPlayerView shows nothing while the TV plays, so say where the video went.
+private struct AirPlayStatus: View {
+    let unreachableHost: String?
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "airplayvideo")
+                .font(.system(size: 44))
+            Text("Playing on AirPlay")
+                .font(.headline)
+            if let unreachableHost {
+                Text("The TV can't reach \(unreachableHost). Sign in with this Mac's LAN address, such as http://192.168.1.10:8000.")
+                    .font(.caption)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 360)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(24)
+        .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 14))
+        .allowsHitTesting(false)
+    }
+}
+
 private struct MacVolumeControl: View {
     @Binding var volume: Double
 
@@ -311,6 +389,20 @@ private struct MacVolumeControl: View {
     }
 }
 #elseif os(iOS)
+private struct AirPlayButton: UIViewRepresentable {
+    let player: AVPlayer
+
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.prioritizesVideoDevices = true
+        view.tintColor = .white
+        view.activeTintColor = .systemBlue
+        return view
+    }
+
+    func updateUIView(_ view: AVRoutePickerView, context: Context) {}
+}
+
 private struct PlayerController: UIViewControllerRepresentable {
     let player: AVPlayer
 
@@ -347,6 +439,10 @@ private struct PlayerController: UIViewControllerRepresentable {
 }
 
 #endif
+
+private func isLoopback(_ host: String) -> Bool {
+    host == "localhost" || host == "::1" || host.hasPrefix("127.")
+}
 
 /// Classify on the larger of the frame height and the height a 16:9 frame of this width
 /// would have: a letterboxed 1920x800 frame is a 1080p stream, not a 720p one.
