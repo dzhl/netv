@@ -109,6 +109,21 @@ test('VOD retains cached-stop semantics; live page close forces release', async 
   }
 });
 
+test('casting detaches the session from browser stop and page-close cleanup', async () => {
+  const calls = [];
+  const env = runtime(async (url, options) => {
+    calls.push([url, options?.method || 'GET']);
+    return ok({ session_id: 'cast', playlist: '/playlist' });
+  });
+  const session = new env.TranscodeSession(false);
+  await session.start('/start');
+  session.detach();
+  await session.stop();
+  session.close();
+  assert.deepEqual(calls, [['/start', 'GET']]);
+  assert.deepEqual(env.beacons, []);
+});
+
 function video() {
   return {
     currentTime: 10, paused: false, ended: false, readyState: 4,

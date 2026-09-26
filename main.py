@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["fastapi", "uvicorn[standard]", "jinja2", "python-multipart", "cryptography", "defusedxml"]
+# dependencies = ["fastapi", "uvicorn[standard]", "jinja2", "python-multipart", "cryptography", "defusedxml", "PyChromecast>=13.1,<15"]
 # ///
 """IPTV Web App.
 
@@ -26,7 +26,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from xml.sax.saxutils import escape as xml_escape
 
 import asyncio
@@ -48,6 +48,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from auth import create_token, verify_password, verify_token
@@ -94,6 +95,7 @@ from playback_policy import PlaybackHealth
 from xtream import XtreamClient
 
 import auth
+import casting
 import epg
 import ffmpeg_command
 import ffmpeg_session
@@ -337,6 +339,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _shutdown_event.set()
     cleanup_stop.set()
     scheduler_stop.set()
+    await asyncio.to_thread(casting.manager.close)
     ffmpeg_session.shutdown()
 
 
@@ -1878,6 +1881,8 @@ async def transcode_start(
     fast_start: bool = False,
 ):
     """Start a transcode session, return session ID."""
+    if casting.manager.owns_url(url):
+        raise HTTPException(409, "This stream is playing on a TV. Stop casting before starting it here.")
     deinterlace_fb = deinterlace_fallback == "1"
     username = user.get("sub", "")
 
@@ -1932,6 +1937,8 @@ async def transcode_seek(
     _user: Annotated[dict, Depends(require_auth)],
 ):
     """Seek VOD transcode to a new position."""
+    if casting.manager.owns_session(session_id):
+        raise HTTPException(409, "Stop casting before changing the transcode position.")
     return await ffmpeg_session.seek_transcode(session_id, time)
 
 
@@ -1968,6 +1975,8 @@ async def transcode_file(
     if not file_path.exists():
         log.debug(f"[CAST] 404 file not found: {file_path}")
         raise HTTPException(404, "File not found")
+
+    ffmpeg_session.touch_session(session_id)
 
     # Log Chromecast requests
     ua = request.headers.get("user-agent", "")
@@ -2031,6 +2040,8 @@ async def transcode_stop(
     force: bool = False,
 ):
     """Stop a transcode session (VOD sessions stay cached)."""
+    if casting.manager.owns_session(session_id):
+        return {"status": "casting"}
     if force:
         session = ffmpeg_session.get_session(session_id)
         if session and session.get("username") != _user.get("sub", ""):
@@ -2055,6 +2066,8 @@ async def transcode_clear(
     _user: Annotated[dict, Depends(require_auth)],
 ):
     """Force-delete any cached transcode session for a URL."""
+    if casting.manager.owns_url(url):
+        raise HTTPException(409, "Stop casting before restarting this transcode.")
     session_id = ffmpeg_session.clear_url_session(url)
     if session_id:
         ffmpeg_session.stop_session(session_id, force=True)
@@ -2644,16 +2657,64 @@ async def settings_captions(
     return {"ok": True}
 
 
-@app.post("/api/cast-log")
-async def cast_log_endpoint(request: Request):
-    """Log cast events from client (debug mode only)."""
-    if log.isEnabledFor(logging.DEBUG):
-        body = await request.body()
-        # Sanitize: limit length, single line, printable chars only
-        msg = body.decode("utf-8", errors="replace")[:2048]
-        msg = "".join(c if c.isprintable() and c != "\n" else "?" for c in msg)
-        log.debug(f"[CAST] {msg}")
-    return {"ok": True}
+class CastStart(BaseModel):
+    host: str = Field(min_length=1, max_length=45)
+    session_id: str = Field(min_length=1, max_length=128)
+    server_url: str = Field(default="", max_length=512)
+    title: str = Field(default="neTV", max_length=256)
+    current_time: float = Field(default=0, ge=0, le=86400000, allow_inf_nan=False)
+
+
+class CastCommand(BaseModel):
+    action: Literal["play", "pause", "stop", "volume"]
+    volume: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+
+
+def require_cast_auth(request: Request) -> dict:
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(401, "Sign in to control Chromecast devices.")
+    return user
+
+
+@app.get("/api/cast/devices")
+def cast_devices(_user: Annotated[dict, Depends(require_cast_auth)]):
+    try:
+        return {"devices": casting.manager.discover()}
+    except (OSError, casting.PyChromecastError) as exc:
+        log.warning("Chromecast discovery failed: %s", type(exc).__name__)
+        raise HTTPException(503, "Discovery failed. Check LAN access or enter the TV's IP manually.") from exc
+
+
+@app.get("/api/cast/status")
+def cast_status(user: Annotated[dict, Depends(require_cast_auth)]):
+    return casting.manager.status(user.get("sub", ""))
+
+
+@app.post("/api/cast/start")
+def cast_start(
+    data: CastStart, request: Request,
+    user: Annotated[dict, Depends(require_cast_auth)],
+):
+    username = user.get("sub", "")
+    settings = load_user_settings(username)
+    address = data.server_url.strip() or settings.get("cast_host", "") or str(request.base_url)
+    if "://" not in address:
+        address = f"{request.url.scheme}://{address}"
+    origin = casting.media_origin(address)
+    result = casting.manager.start(
+        username, data.host, data.session_id, origin, data.title, data.current_time,
+    )
+    if data.server_url:
+        settings = load_user_settings(username)
+        settings["cast_host"] = origin
+        save_user_settings(username, settings)
+    return result
+
+
+@app.post("/api/cast/control")
+def cast_control(data: CastCommand, user: Annotated[dict, Depends(require_cast_auth)]):
+    return casting.manager.command(user.get("sub", ""), data.action, data.volume)
 
 
 @app.get("/api/user-prefs")

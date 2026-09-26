@@ -47,7 +47,7 @@ through their IPTV providers.
 - **Real-time 4K AI Upscale** - 1080p → 4K at 70+ FPS through TensorRT on an RTX 5090
 - **GPU-accelerated transcoding** - NVDEC, TensorRT, and NVENC with low-latency HLS
 - **Playback resolution badge** - Web and Apple players show the actual video resolution, including 720p, 1080p, and 4K
-- **Chromecast** support (HTTPS required)
+- **Chromecast** support over your LAN, including HTTP (server-side discovery and controls)
 - **Closed captions** with style customization
 - **Search** across all content (supports regex)
 - **Favorites** with drag-and-drop ordering
@@ -414,15 +414,68 @@ NETV_PORT=9000 docker compose up -d        # custom port
 NETV_HTTPS=1 docker compose up -d          # enable HTTPS (mount certs first)
 ```
 
+### Chromecast on a local network
+
+Open neTV using the server's LAN address (for example,
+`http://192.168.1.10:8000`), start a channel, movie, or episode, and select
+**Cast to TV** in the player. Select a discovered device or enter the
+Chromecast's LAN IP manually. The server controls the TV, so this also works
+from iPhone browsers without Google's browser Cast SDK. No domain, HTTPS
+certificate, or internet-facing port forwarding is required.
+
+Only **Google Cast** receivers are supported: Chromecast, Google TV/Android TV,
+Nest Hub, and TVs with Chromecast built-in. Apple TV and AirPlay-only TVs
+(including many LG and Samsung models) are not Cast receivers and will not be
+listed. A "cast" button in YouTube or Netflix on those TVs uses DIAL, not
+Google Cast. Audio-only Cast speakers (Nest Mini, cast-enabled receivers) may be
+discovered but cannot display video.
+
+**neTV address reachable by the TV** must include the correct protocol and
+published port. It defaults to the browser's address and is remembered per user
+after a successful cast. Replace `localhost`, a Docker-only address, or an
+unreachable reverse-proxy hostname with the server's LAN address. If using HTTPS,
+the TV must trust its certificate; accepting a self-signed certificate in your
+browser does not make the TV trust it.
+
+Casting uses neTV's HLS transcode/remux pipeline, even when browser playback was
+direct. FFmpeg must be installed, and the selected output codecs/resolution must
+be supported by the receiver. Live casting starts at the live edge; movies and
+episodes transfer the current position. Cast controls provide play, pause,
+volume, and stop. Movie/episode watch positions are saved by the server.
+Seeking and automatic next-episode playback on the TV are not currently supported.
+
+The browser pauses after the receiver accepts the stream. You can close the page
+and playback continues; return to a player page to control the active cast.
+Each user can control one cast at a time, and a TV already casting for another
+neTV user cannot be taken over. **Stop casting and play here** returns playback
+to the browser. Restarting neTV ends its casting sessions.
+
+**Docker/networking:** default bridge networking can prevent mDNS discovery.
+Manual TV IP entry works without multicast when the container can reach the TV
+and the TV can reach neTV's published port. On Linux, an optional host-network
+override enables LAN discovery (Docker Compose 2.24+):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.cast.yml up -d --build netv
+```
+
+With this override, `NETV_PORT` is the actual listening port; Docker port mappings
+are removed. Host networking is Linux-specific here; on Docker Desktop, prefer
+manual IP entry. Allow server-to-TV Cast traffic (TCP 8009 and device information
+on 8008/8443), TV-to-neTV HTTP traffic, and UDP 5353 multicast for discovery.
+Guest Wi-Fi/client isolation or separate VLANs can block these paths. This does
+not make the Chromecast fully offline: its receiver software may still need
+internet access.
+
 ### Debian/Ubuntu (`systemd`)
 
-For peak FFMPEG performance, Chromecast (requires HTTPS), and auto-start:
+For peak FFMPEG performance and auto-start:
 
 ```bash
 # 1. Install prerequisites (uv, Python)
 ./tools/install-prereqs.sh
 
-# 2. (Optional) Get HTTPS certificates (required for Chromecast)
+# 2. (Optional) Get HTTPS certificates (not required for Chromecast)
 ./tools/install-letsencrypt.sh yourdomain.com
 
 # 3. (Optional) Build FFmpeg (required for optimal Nvidia encoding efficiency)
@@ -456,7 +509,9 @@ sudo ./tools/uninstall-netv.sh   # Uninstall
 
 ### Development/Testing
 
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/):
+Requires Python 3.11+, [uv](https://docs.astral.sh/uv/), and FFmpeg (`ffmpeg`
+and `ffprobe` on `PATH`, e.g. `brew install ffmpeg` or `apt install ffmpeg`).
+Without FFmpeg, streams fail to start:
 
 ```bash
 git clone https://github.com/jvdillon/netv.git

@@ -102,6 +102,114 @@ def test_web_player_includes_resolution_badge(auth_client):
     script = auth_client.get("/static/js/player-quality.js")
     assert script.status_code == 200
     assert "videoWidth" in script.text
+    assert 'id="cast-btn"' in response.text
+    assert 'id="cast-dialog"' in response.text
+    assert "cast_sender.js" not in response.text
+    assert response.text.index("/static/js/cast.js") < response.text.index("/static/js/player.js")
+    from html.parser import HTMLParser
+
+    class CastPlacement(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.divs = []
+            self.parents = {}
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if attrs.get("id") in ("cast-overlay", "cast-dialog"):
+                self.parents[attrs["id"]] = self.divs[-1].get("id")
+            if tag == "div":
+                self.divs.append(attrs)
+
+        def handle_endtag(self, tag):
+            if tag == "div":
+                self.divs.pop()
+
+    placement = CastPlacement()
+    placement.feed(response.text)
+    assert placement.parents == {"cast-overlay": "player-container", "cast-dialog": "player-container"}
+
+
+@pytest.mark.parametrize("path", ["devices", "status"])
+def test_cast_requires_authentication(client, path):
+    assert client.get(f"/api/cast/{path}").status_code == 401
+
+
+@pytest.mark.parametrize("path", ["start", "control"])
+def test_cast_commands_require_authentication(client, path):
+    assert client.post(f"/api/cast/{path}", json={}).status_code == 401
+
+
+def test_cast_api_uses_http_and_remembers_lan_address(auth_client):
+    with patch("casting.manager.start", return_value={"active": True}) as start:
+        response = auth_client.post("/api/cast/start", json={
+            "host": "192.168.1.50", "session_id": "abc", "server_url": "http://192.168.1.10:9000/",
+            "title": "News", "current_time": 15,
+        })
+        assert response.status_code == 200
+        start.assert_called_once_with("testuser", "192.168.1.50", "abc", "http://192.168.1.10:9000", "News", 15)
+        assert cache_module.load_user_settings("testuser")["cast_host"] == "http://192.168.1.10:9000"
+
+
+def test_cast_api_uses_request_origin_and_supports_legacy_host_preference(auth_client):
+    with patch("casting.manager.start", return_value={"active": True}) as start:
+        response = auth_client.post("/api/cast/start", json={"host": "192.168.1.50", "session_id": "abc"})
+        assert response.status_code == 200
+        assert start.call_args.args[3] == "http://testserver"
+        cache_module.save_user_settings("testuser", {"cast_host": "192.168.1.10:8000"})
+        response = auth_client.post("/api/cast/start", json={"host": "192.168.1.50", "session_id": "abc"})
+        assert response.status_code == 200
+        assert start.call_args.args[3] == "http://192.168.1.10:8000"
+
+
+def test_cast_rejects_localhost_media_address(auth_client):
+    with patch("casting.manager.start") as start:
+        response = auth_client.post("/api/cast/start", json={
+            "host": "192.168.1.50", "session_id": "abc", "server_url": "http://localhost:8000",
+        })
+        assert response.status_code == 400
+        start.assert_not_called()
+
+
+def test_cast_command_validation_and_user_scope(auth_client):
+    with patch("casting.manager.command", return_value={"active": True}) as command:
+        assert auth_client.post("/api/cast/control", json={"action": "volume", "volume": 2}).status_code == 422
+        assert auth_client.post("/api/cast/control", json={"action": "reboot"}).status_code == 422
+        command.assert_not_called()
+        assert auth_client.post("/api/cast/control", json={"action": "pause"}).status_code == 200
+        command.assert_called_once_with("testuser", "pause", None)
+
+
+def test_cast_discovery_reports_network_errors(auth_client):
+    with patch("casting.manager.discover", side_effect=OSError("no network")):
+        response = auth_client.get("/api/cast/devices")
+    assert response.status_code == 503
+    assert "manually" in response.json()["detail"]
+
+
+def test_browser_cannot_stop_or_seek_cast_owned_session(auth_client):
+    with patch("casting.manager.owns_session", return_value=True), patch("ffmpeg_session.stop_session") as stop:
+        response = auth_client.post("/transcode/abc/stop?force=true")
+        assert response.json() == {"status": "casting"}
+        assert auth_client.delete("/transcode/abc?force=true").json() == {"status": "casting"}
+        assert auth_client.get("/transcode/seek/abc?time=10").status_code == 409
+        stop.assert_not_called()
+
+
+def test_cast_source_cannot_be_restarted_while_receiver_owns_it(auth_client):
+    with patch("casting.manager.owns_url", return_value=True), patch("ffmpeg_session.clear_url_session") as clear:
+        assert auth_client.delete("/transcode-clear?url=http://provider/live").status_code == 409
+        assert auth_client.get("/transcode/start?url=http://provider/live").status_code == 409
+        clear.assert_not_called()
+
+
+def test_receiver_hls_request_keeps_session_alive_without_cookie(client, tmp_path):
+    (tmp_path / "stream.m3u8").write_text("#EXTM3U\n#EXTINF:6,\nseg001.ts\n")
+    with patch("ffmpeg_session.get_session", return_value={"dir": str(tmp_path)}), patch("ffmpeg_session.touch_session") as touch:
+        response = client.get("/transcode/abc/stream.m3u8")
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"
+    touch.assert_called_once_with("abc")
 
 
 def test_live_dvr_routes_auto_mode_through_server(auth_client):

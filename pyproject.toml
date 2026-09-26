@@ -29,6 +29,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "cryptography>=43.0",
     "defusedxml>=0.7",
+    "PyChromecast>=13.1,<15",
 ]
 
 [dependency-groups]

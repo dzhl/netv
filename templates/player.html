@@ -25,6 +25,7 @@
 }
 #player-container { cursor: none; }
 #player-container.controls-visible { cursor: auto; }
+#player-container:has(#cast-overlay:not(.hidden)) { cursor: auto; }
 /* Settings menu */
 .settings-menu {
   display: none;
@@ -57,6 +58,9 @@
 .ctrl-btn svg { width: 1.25rem; height: 1.25rem; fill: white; }
 #toggle-cc svg, #info-btn svg, #autonext-btn svg { opacity: 0.25; }
 #toggle-cc.active svg, #info-btn.active svg, #autonext-btn.active svg { opacity: 1; }
+#cast-btn.active { background: #2563eb; }
+#cast-dialog::backdrop { background: rgba(0,0,0,0.7); }
+#cast-dialog { max-height: 90vh; overflow-y: auto; }
 /* Seek input */
 #seek-container input {
   background: rgba(0,0,0,0.7);
@@ -162,11 +166,9 @@
             </div>
           </div>
 
-          {% if request.url.scheme == 'https' %}
-          <button id="cast-btn" class="ctrl-btn" title="Cast" disabled>
+          <button id="cast-btn" class="ctrl-btn" title="Cast to TV (a)" aria-haspopup="dialog">
             <svg viewBox="0 0 24 24"><path d="M21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11z"/></svg>
           </button>
-          {% endif %}
 
           <button id="fullscreen-btn" class="ctrl-btn" title="Fullscreen (f)">
             <svg id="fs-enter" viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
@@ -175,6 +177,44 @@
         </div>
       </div>
     </div>
+    <div id="cast-overlay" class="hidden absolute inset-0 z-40 bg-black flex items-center justify-center">
+      <div class="text-center p-6">
+        <p id="cast-state" class="text-xl mb-4" role="status" aria-live="polite"></p>
+        <button id="cast-manage" class="px-4 py-2 bg-blue-600 rounded">Cast controls</button>
+        <button id="cast-local" class="px-4 py-2 bg-gray-700 rounded">Stop casting and play here</button>
+        <p class="text-sm text-gray-400 mt-4">You can close this page; playback continues on the TV.</p>
+      </div>
+    </div>
+    <dialog id="cast-dialog" class="bg-gray-800 text-white rounded-lg p-5 w-full max-w-md" aria-labelledby="cast-heading">
+      <div class="flex justify-between items-center mb-4">
+        <h2 id="cast-heading" class="text-lg font-semibold">Cast to TV</h2>
+        <button id="cast-close" class="px-3 py-1 rounded bg-gray-700" aria-label="Close cast controls">Close</button>
+      </div>
+      <p id="cast-error" class="hidden text-red-400 mb-3" role="alert"></p>
+      <div id="cast-picker">
+        <button id="cast-refresh" class="px-3 py-2 bg-gray-700 rounded mb-3">Find devices</button>
+        <p id="cast-discovery" class="text-sm text-gray-400 mb-3" role="status"></p>
+        <div id="cast-devices" class="flex flex-col gap-2 mb-4"></div>
+        <form id="cast-form">
+          <label for="cast-ip" class="block text-sm mb-1">Chromecast LAN IP (if not listed)</label>
+          <input id="cast-ip" type="text" required placeholder="192.168.1.50" autocomplete="off" class="w-full bg-gray-900 rounded px-3 py-2 mb-3">
+          <label for="cast-server" class="block text-sm mb-1">neTV address reachable by the TV</label>
+          <input id="cast-server" type="text" placeholder="http://192.168.1.10:8000" autocomplete="url" class="w-full bg-gray-900 rounded px-3 py-2 mb-2">
+          <p class="text-xs text-gray-400 mb-3">Use the server's LAN address and published port, not localhost or a Docker IP. No HTTPS is required.</p>
+          <button id="cast-start" class="px-4 py-2 bg-blue-600 rounded" type="submit">Cast</button>
+        </form>
+      </div>
+      <div id="cast-remote" class="hidden">
+        <p id="cast-now" class="mb-3" role="status"></p>
+        <div class="flex gap-2 mb-4">
+          <button id="cast-play" class="px-3 py-2 bg-gray-700 rounded">Play</button>
+          <button id="cast-pause" class="px-3 py-2 bg-gray-700 rounded">Pause</button>
+          <button id="cast-stop" class="px-3 py-2 bg-red-700 rounded">Stop casting</button>
+        </div>
+        <label for="cast-volume" class="block text-sm mb-2">TV volume</label>
+        <input id="cast-volume" type="range" min="0" max="1" step="0.05" class="w-full">
+      </div>
+    </dialog>
   </div>
 {% endblock %}
 
@@ -199,12 +239,12 @@ window.PLAYER_CONFIG = {
   ccStyle: {{ cc_style | tojson }},
   ccLang: {{ cc_lang | tojson }},
   castHost: {{ cast_host | tojson }},
-  isHttps: {{ (request.url.scheme == 'https') | tojson }},
   deinterlaceFallback: {{ deinterlace_fallback | tojson }},
   sourceId: {{ source_id | tojson }}
 };
 </script>
 <script src="/static/js/player-quality.js"></script>
 <script src="/static/js/live-playback.js"></script>
+<script src="/static/js/cast.js"></script>
 <script src="/static/js/player.js"></script>
 {% endblock %}
