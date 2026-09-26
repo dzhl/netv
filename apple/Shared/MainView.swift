@@ -130,9 +130,6 @@ private struct GuideMainView: View {
 
     private var navigationRail: some View {
         VStack(spacing: GuideMetrics.scaled(18)) {
-            BrandMark(size: GuideMetrics.scaled(34))
-                .padding(.bottom, 10)
-                .accessibilityLabel("neTV")
             ForEach(GuideDestination.allCases) { item in
                 if item == .settings {
                     #if os(tvOS)

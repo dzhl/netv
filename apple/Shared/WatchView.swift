@@ -73,6 +73,8 @@ struct WatchView: View {
                         .contentShape(Rectangle())
                         .focusable(model.isPlayerExpanded)
                         .focused($isPlayerFocused)
+                        .onTapGesture { model.playPauseRequest = UUID() }
+                        .onMoveCommand { _ in model.playerActivity = UUID() }
                     #endif
                     #if os(macOS)
                     expandButton

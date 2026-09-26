@@ -15,6 +15,9 @@ struct PlayerView: View {
     @State private var quality: String?
     @State private var airPlayActive = false
     @State private var airPlayHost: String?
+    #if os(tvOS)
+    @State private var tvActivity = Date()
+    #endif
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.netv",
         category: "Player"
@@ -112,12 +115,29 @@ struct PlayerView: View {
         }
         #endif
         #if os(tvOS)
+        .overlay(alignment: .bottom) {
+            if let player {
+                TVControlBar(
+                    player: player,
+                    selection: selection,
+                    expanded: model.isPlayerExpanded,
+                    lastActivity: tvActivity
+                )
+            }
+        }
         .onChange(of: model.playPauseRequest) { _, _ in
             if player?.timeControlStatus == .paused {
                 player?.play()
             } else {
                 player?.pause()
             }
+            tvActivity = Date()
+        }
+        .onChange(of: model.playerActivity) { _, _ in
+            tvActivity = Date()
+        }
+        .onChange(of: model.isPlayerExpanded) { _, expanded in
+            if expanded { tvActivity = Date() }
         }
         #endif
         .task {
@@ -493,6 +513,67 @@ private struct PlayerController: UIViewControllerRepresentable {
         if controller.player !== player {
             controller.player = player
         }
+    }
+}
+
+/// Status-only bar: the Siri Remote drives playback, so nothing here takes focus.
+/// It appears on remote activity and stays visible while paused.
+private struct TVControlBar: View {
+    let player: AVPlayer
+    let selection: PlayerSelection
+    let expanded: Bool
+    let lastActivity: Date
+
+    @State private var isPlaying = true
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let visible = !isPlaying || context.date.timeIntervalSince(lastActivity) < 4
+            bar
+                .opacity(visible ? 1 : 0)
+                .animation(.easeInOut(duration: 0.3), value: visible)
+        }
+        .allowsHitTesting(false)
+        .onReceive(player.publisher(for: \.timeControlStatus)) { status in
+            isPlaying = status != .paused
+        }
+    }
+
+    private var bar: some View {
+        HStack(spacing: expanded ? 24 : 12) {
+            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                .font(.system(size: expanded ? 30 : 18, weight: .semibold))
+                .frame(width: expanded ? 36 : 22)
+                .accessibilityLabel(isPlaying ? "Playing" : "Paused")
+
+            HStack(spacing: 6) {
+                Circle().fill(.red).frame(width: expanded ? 10 : 7, height: expanded ? 10 : 7)
+                Text("LIVE").font((expanded ? Font.callout : .caption2).weight(.bold))
+            }
+            .accessibilityElement(children: .combine)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(selection.channel.name)
+                        .font(.headline)
+                    if let program = selection.program {
+                        Text("\(program.title)  \(program.start) – \(program.end)")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.7))
+                    }
+                }
+                .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, expanded ? 60 : 16)
+        .padding(.top, expanded ? 40 : 16)
+        .padding(.bottom, expanded ? 50 : 10)
+        .background(
+            LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .top, endPoint: .bottom)
+        )
     }
 }
 

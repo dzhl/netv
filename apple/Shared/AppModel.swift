@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
     #endif
     #if os(tvOS)
     @Published var playPauseRequest: UUID?
+    @Published var playerActivity: UUID?
     #endif
 
     // Carry the server's current quality decision across channel changes.
