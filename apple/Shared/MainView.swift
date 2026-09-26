@@ -67,9 +67,18 @@ private struct GuideMainView: View {
         .tint(GuideTheme.program)
         #if os(macOS)
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text(destination.title)
-                    .font(.headline)
+            // macOS 26 wraps toolbar items in a glass pill; the title is plain text.
+            if #available(macOS 26.0, *) {
+                ToolbarItem(placement: .principal) {
+                    Text(destination.title)
+                        .font(.headline)
+                }
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .principal) {
+                    Text(destination.title)
+                        .font(.headline)
+                }
             }
             if destination == .live {
                 ToolbarItem(placement: .automatic) {
