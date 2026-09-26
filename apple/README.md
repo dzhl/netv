@@ -25,8 +25,9 @@ pressing Select again returns to fullscreen without restarting playback. Video
 retains its original aspect ratio. The remote's Play/Pause button works without
 showing a transport overlay.
 
-Mac uses the native macOS player controls (play/pause, volume, and AirPlay): a
-slim inline bar in the guide preview and the floating panel when expanded;
+Mac shows a slim neTV control bar (play/pause, LIVE, volume, and AirPlay) along
+the bottom of the video on hover; it stays visible while paused. AVKit's own
+inline controls are not used because they crashed with live streams;
 TV displays no native transport toolbar or full-width title overlay. TV has no
 fullscreen button or percentage/volume panel; use the Siri Remote's hardware
 volume keys to control the connected TV/receiver. Mac retains its fullscreen
@@ -41,7 +42,7 @@ channels and the three-hour schedule.
 ## AirPlay
 
 On iPhone, iPad, and Mac, the player has an **AirPlay** button (top right on
-iPhone/iPad, in the native player controls on Mac). It sends video to an Apple TV or an AirPlay 2
+iPhone/iPad, in the hover control bar on Mac). It sends video to an Apple TV or an AirPlay 2
 TV, which fetches the stream from neTV itself. Sign in with the server's LAN
 address, such as `http://192.168.1.10:8000`: a TV cannot reach `localhost`, and
 the Mac app warns when AirPlay is active with a loopback server address. While

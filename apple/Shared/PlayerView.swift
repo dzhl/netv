@@ -1,4 +1,5 @@
 import AVKit
+import Combine
 #if os(iOS)
 import AVFAudio
 #endif
@@ -23,14 +24,7 @@ struct PlayerView: View {
         ZStack {
             Color.black
             if let player {
-                #if os(macOS)
-                PlayerController(
-                    player: player, volume: $model.playbackVolume,
-                    compact: !model.isPlayerExpanded
-                )
-                #else
                 PlayerController(player: player)
-                #endif
             } else if let errorMessage {
                 ContentUnavailableView(
                     "Unable to Play",
@@ -83,6 +77,13 @@ struct PlayerView: View {
         }
         #if os(macOS) || os(tvOS)
         #if os(macOS)
+        .overlay(alignment: .bottom) {
+            if let player {
+                MacControlBar(
+                    player: player, volume: $model.playbackVolume, airPlayActive: airPlayActive
+                )
+            }
+        }
         .overlay(alignment: .top) {
             if airPlayActive, let airPlayHost {
                 AirPlayHostWarning(host: airPlayHost)
@@ -290,51 +291,141 @@ struct PlayerView: View {
 }
 
 #if os(macOS)
-/// Native controls supply the system AirPlay button and volume slider. The slider
-/// writes back to the app volume so it carries across channel and quality changes.
 private struct PlayerController: NSViewRepresentable {
     let player: AVPlayer
-    @Binding var volume: Double
-    /// The guide preview uses the slim inline bar; fullscreen uses the floating panel.
-    let compact: Bool
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
-        view.controlsStyle = compact ? .inline : .floating
+        view.controlsStyle = .none
         view.videoGravity = .resizeAspect
         view.player = player
-        context.coordinator.observe(player)
         return view
     }
 
     func updateNSView(_ view: AVPlayerView, context: Context) {
-        context.coordinator.volume = $volume
-        let style: AVPlayerViewControlsStyle = compact ? .inline : .floating
-        if view.controlsStyle != style {
-            view.controlsStyle = style
-        }
         if view.player !== player {
             view.player = player
-            context.coordinator.observe(player)
+        }
+    }
+}
+
+/// A slim bar of our own: AVKit's inline controls crashed with neTV's live streams.
+/// It appears on hover and stays visible while paused.
+private struct MacControlBar: View {
+    let player: AVPlayer
+    @Binding var volume: Double
+    let airPlayActive: Bool
+
+    @State private var isPlaying = true
+    @State private var isHovering = false
+    @State private var lastActivity = Date.distantPast
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let visible = !isPlaying || (isHovering && context.date.timeIntervalSince(lastActivity) < 3)
+            bar
+                .opacity(visible ? 1 : 0)
+                .animation(.easeInOut(duration: 0.2), value: visible)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .contentShape(Rectangle())
+        .onContinuousHover { phase in
+            if case .active = phase {
+                isHovering = true
+                lastActivity = Date()
+            } else {
+                isHovering = false
+            }
+        }
+        .onReceive(player.publisher(for: \.timeControlStatus)) { status in
+            isPlaying = status != .paused
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(volume: $volume) }
-
-    final class Coordinator {
-        var volume: Binding<Double>
-        private var observation: NSKeyValueObservation?
-
-        init(volume: Binding<Double>) { self.volume = volume }
-
-        func observe(_ player: AVPlayer) {
-            observation = player.observe(\.volume, options: [.new]) { [weak self] player, _ in
-                let value = Double(player.volume)
-                DispatchQueue.main.async {
-                    guard let self, abs(self.volume.wrappedValue - value) > 0.001 else { return }
-                    self.volume.wrappedValue = value
-                }
+    private var bar: some View {
+        HStack(spacing: 12) {
+            Button {
+                if player.timeControlStatus == .paused { player.play() } else { player.pause() }
+                lastActivity = Date()
+            } label: {
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 20, height: 20)
             }
+            .buttonStyle(.plain)
+            .help(isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(isPlaying ? "Pause" : "Play")
+
+            HStack(spacing: 4) {
+                Circle().fill(.red).frame(width: 6, height: 6)
+                Text("LIVE").font(.caption2.weight(.bold))
+            }
+            .accessibilityElement(children: .combine)
+
+            Spacer(minLength: 8)
+
+            Image(systemName: volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.system(size: 12))
+                .frame(width: 16)
+                .accessibilityHidden(true)
+            Slider(value: $volume, in: 0...1) { editing in
+                if editing { lastActivity = Date() }
+            }
+            .labelsHidden()
+            .controlSize(.mini)
+            .tint(.white)
+            .frame(width: 70)
+            .accessibilityLabel("Volume")
+            .accessibilityValue("\(Int(volume * 100)) percent")
+
+            AirPlayButton(player: player, active: airPlayActive)
+                .frame(width: 22, height: 22)
+                .help("AirPlay")
+                .accessibilityLabel("AirPlay")
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(
+            LinearGradient(colors: [.clear, .black.opacity(0.8)], startPoint: .top, endPoint: .bottom)
+        )
+    }
+}
+
+/// macOS's route picker always draws the AirPlay audio glyph, so its button is made
+/// transparent and the video glyph is drawn on top without taking the click.
+private struct AirPlayButton: View {
+    let player: AVPlayer
+    let active: Bool
+
+    var body: some View {
+        ZStack {
+            RoutePicker(player: player)
+            Image(systemName: "airplayvideo")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(active ? Color.blue : Color.white)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+/// Routes this player's video; AVRoutePickerView.player is macOS-only.
+private struct RoutePicker: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.isRoutePickerButtonBordered = false
+        for state in [AVRoutePickerView.ButtonState.normal, .normalHighlighted, .active, .activeHighlighted] {
+            view.setRoutePickerButtonColor(.clear, for: state)
+        }
+        view.player = player
+        return view
+    }
+
+    func updateNSView(_ view: AVRoutePickerView, context: Context) {
+        if view.player !== player {
+            view.player = player
         }
     }
 }
