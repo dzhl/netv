@@ -41,7 +41,7 @@ through their IPTV providers.
 ## Features
 
 - **Live TV** with EPG grid guide
-- **Experimental Apple apps** for iPhone, Apple TV, and macOS
+- **Mac app** on the [Mac App Store](https://apps.apple.com/us/app/netv-personal-tv-player/id6814189386?mt=12); Apple TV and iPhone apps are coming soon
 - **Native player gateway** - Bring your neTV channels and settings to Apple TV and other Xtream-compatible players
 - **Movies & Series** with metadata, seasons, episodes
 - **Real-time 4K AI Upscale** - 1080p → 4K at 70+ FPS through TensorRT on an RTX 5090
@@ -56,12 +56,17 @@ through their IPTV providers.
 - **Responsive** - works on desktop, tablet, mobile
 - **Keyboard navigation** - 10-foot UI friendly
 
-### Experimental Apple Apps
+### Apple Apps
 
-Native SwiftUI clients for iPhone, Apple TV, and macOS are available under
-[`apple/`](apple/). This work is experimental and the UI and setup may change.
+**Mac:** [neTV Personal TV Player](https://apps.apple.com/us/app/netv-personal-tv-player/id6814189386?mt=12) is on the Mac App Store. It's a
+separate Mac client for a neTV server running somewhere else in your house, such
+as a media PC, NAS, or home server. Install it, enter your server's address (for
+example `http://192.168.1.10:8000`), and sign in with your neTV account.
 
-To try them:
+**Apple TV and iPhone:** coming soon to the App Store.
+
+The native SwiftUI source for all three apps is in [`apple/`](apple/). To build
+them yourself:
 
 ```bash
 cd apple
