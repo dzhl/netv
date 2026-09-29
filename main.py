@@ -691,9 +691,15 @@ async def guide_page(
         # default view if nothing remains.
         live_playlist_ids = {c["category_id"] for c in playlist_cats}
         kept = [c for c in saved_view_cats if not playlists.is_playlist_id(c) or c in live_playlist_ids]
-        if len(kept) != len(saved_view_cats):
+        # Playlists created after the view was saved are shown once; if the
+        # user deselects them later, that choice sticks.
+        known = set(user_settings.get("guide_known_playlists", []))
+        new_ids = [c["category_id"] for c in playlist_cats if c["category_id"] not in known]
+        kept = [c for c in new_ids if c not in kept] + kept
+        if new_ids or kept != saved_view_cats:
             saved_view_cats = kept or None
             user_settings["guide_selected_cats"] = saved_view_cats
+            user_settings["guide_known_playlists"] = sorted(live_playlist_ids)
             save_user_settings(username, user_settings)
 
     # Determine effective cats: URL param (if present) > saved view > all from filter
@@ -2869,6 +2875,9 @@ async def save_user_prefs(
     ):
         if key in data:
             settings[key] = data[key]
+    if "guide_selected_cats" in data:
+        # The user has now seen every current playlist; don't re-add ones they left out.
+        settings["guide_known_playlists"] = sorted(c["category_id"] for c in _playlist_categories())
     save_user_settings(username, settings)
     return {"ok": True}
 

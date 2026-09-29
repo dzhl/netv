@@ -1250,6 +1250,20 @@ class TestPlaylists:
         rows = re.findall(r'<div class="guide-row[^"]*" data-row="(\d+)"', resp.text)
         assert rows == ["0", "1", "2"]
 
+    def test_new_playlist_joins_saved_view_once(self, auth_client):
+        auth_client.post("/settings/guide-filter", json={"cats": ["1", "2"]})
+        auth_client.post("/api/user-prefs", json={"guide_selected_cats": ["2"]})
+        self._create(auth_client)
+
+        def section_names():
+            with patch("main.epg.has_programs", return_value=True):
+                text = auth_client.get("/guide").text
+            return [s["name"] for s in json.loads(re.search(r"sections: (\[.*?\]),\n", text).group(1))]
+
+        assert section_names() == ["★ Favorites", "Sports"]
+        auth_client.post("/api/user-prefs", json={"guide_selected_cats": ["2"]})
+        assert section_names() == ["Sports"]
+
     def test_guide_rows_use_earliest_selected_category(self, auth_client):
         cache_module.get_cache()["live_streams"].append(
             {"stream_id": 4, "name": "Both", "category_ids": ["2", "1"], "epg_channel_id": "", "source_id": "s"}
