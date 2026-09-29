@@ -16,6 +16,16 @@ private final class ArchiveTransport: URLProtocol {
                 transcodeMode: "always", sourceId: "test", deinterlaceFallback: false,
                 catchupStart: 1700000580.0, catchupSeek: 45.0
                 """
+        } else if url.path == "/api/user-prefs" {
+            body = #"{"guide_filter":["group","pl:test"]}"#
+        } else if url.path == "/api/guide/rows" {
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
+            let start = query.first { $0.name == "start" }!.value!
+            let offset = Int(query.first { $0.name == "offset" }!.value!)!
+            body = """
+                {"rows":[{"channel":{"stream_id":"\(start)","name":"Stream","icon":""},"programs":[]}],
+                 "total":2,"window_start_timestamp":\(1700000000 + offset * 3600)}
+                """
         } else if url.path == "/transcode/start" {
             body = #"{"session_id":"archive","playlist":"/transcode/archive/stream.m3u8"}"#
         } else if url.path.hasPrefix("/transcode/progress/") {
@@ -56,6 +66,18 @@ struct ArchiveAPIChecks {
         try await client.releaseTranscode(server: "http://netv.test", sessionID: "archive")
         precondition(ArchiveTransport.requests.last?.httpMethod == "DELETE")
         precondition(ArchiveTransport.requests.last?.url?.query == "force=true")
+        for offset in [-6, 0, 3] {
+            ArchiveTransport.requests = []
+            let guide = try await client.guide(server: "http://netv.test", offset: offset)
+            precondition(guide.rows.count == 2)
+            let pages = ArchiveTransport.requests.filter { $0.url?.path == "/api/guide/rows" }
+            precondition(pages.count == 2)
+            for page in pages {
+                let query = URLComponents(url: page.url!, resolvingAgainstBaseURL: false)!.queryItems!
+                precondition(query.contains(URLQueryItem(name: "offset", value: String(offset))))
+                precondition(query.contains(URLQueryItem(name: "cats", value: "group,pl:test")))
+            }
+        }
         print("Archive API checks passed: exact position, VOD mode, heartbeat and forced release")
     }
 }

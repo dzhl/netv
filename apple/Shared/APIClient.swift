@@ -89,7 +89,7 @@ final class APIClient {
         return http.statusCode == 200
     }
 
-    func guide(server: String) async throws -> GuideResponse {
+    func guide(server: String, offset: Int = 0) async throws -> GuideResponse {
         guard let baseURL = normalizedServerURL(server) else {
             throw APIError.invalidServer
         }
@@ -99,7 +99,7 @@ final class APIClient {
         components?.queryItems = [
             URLQueryItem(name: "start", value: "0"),
             URLQueryItem(name: "count", value: "500"),
-            URLQueryItem(name: "offset", value: "0"),
+            URLQueryItem(name: "offset", value: String(offset)),
             URLQueryItem(name: "cats", value: categories)
         ]
         guard let url = components?.url else { throw APIError.invalidServer }
@@ -109,7 +109,7 @@ final class APIClient {
             components?.queryItems = [
                 URLQueryItem(name: "start", value: String(guide.rows.count)),
                 URLQueryItem(name: "count", value: "500"),
-                URLQueryItem(name: "offset", value: "0"),
+                URLQueryItem(name: "offset", value: String(offset)),
                 URLQueryItem(name: "cats", value: categories)
             ]
             guard let pageURL = components?.url else { throw APIError.invalidServer }

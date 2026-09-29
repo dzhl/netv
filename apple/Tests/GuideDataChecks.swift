@@ -68,7 +68,7 @@ struct GuideDataChecks {
         precondition(GuideCategoryGroup.distinct([]).isEmpty)
 
         precondition(!legacy.rows[0].channel.canCatchUp(from: now - 60), "Older servers report no archive")
-        precondition(!current.catchup)
+        precondition(!current.catchup && !current.unavailable)
         let archived = try decoder.decode(GuideResponse.self, from: Data("""
             {
               "rows":[{"channel":{"stream_id":"7","name":"News","catchup_days":2},
@@ -80,6 +80,12 @@ struct GuideDataChecks {
             """.utf8))
         let archive = archived.rows[0].channel
         precondition(archive.catchupDays == 2 && archived.rows[0].programs[0].catchup)
+        precondition(archived.rows[0].currentProgram == nil, "Past guide windows must not supply live metadata")
+        let unavailable = try decoder.decode(Program.self, from: Data("""
+            {"title":"Unavailable","desc":"","start":"09:00","end":"10:00",
+             "left_pct":0,"width_pct":20,"unavailable":true}
+            """.utf8))
+        precondition(unavailable.unavailable)
         precondition(archive.canCatchUp(from: now - 86_400))
         precondition(!archive.canCatchUp(from: now - 3 * 86_400), "Programs older than the archive can't restart")
         precondition(!archive.canCatchUp(from: now + 60) && !archive.canCatchUp(from: nil))

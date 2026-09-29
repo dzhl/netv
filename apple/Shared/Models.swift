@@ -79,7 +79,7 @@ struct ChannelRow: Decodable, Identifiable, Hashable {
 
     var id: String { channel.id }
     var currentProgram: Program? {
-        programs.first(where: \.isCurrent) ?? programs.first
+        programs.first(where: \.isCurrent)
     }
 }
 
@@ -133,9 +133,10 @@ struct Program: Decodable, Hashable {
     let endTimestamp: Double?
     /// The server confirmed this program can be watched from the upstream archive.
     let catchup: Bool
+    let unavailable: Bool
 
     enum CodingKeys: String, CodingKey {
-        case title, desc, start, end, catchup
+        case title, desc, start, end, catchup, unavailable
         case leftPercent = "left_pct"
         case widthPercent = "width_pct"
         case startTimestamp = "start_timestamp"
@@ -153,6 +154,7 @@ struct Program: Decodable, Hashable {
         startTimestamp = try container.decodeIfPresent(Double.self, forKey: .startTimestamp)
         endTimestamp = try container.decodeIfPresent(Double.self, forKey: .endTimestamp)
         catchup = try container.decodeIfPresent(Bool.self, forKey: .catchup) ?? false
+        unavailable = try container.decodeIfPresent(Bool.self, forKey: .unavailable) ?? false
     }
 
     /// Day and time, for listings that reach back past today.

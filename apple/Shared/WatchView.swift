@@ -114,10 +114,11 @@ struct WatchView: View {
         guard let selection = model.selection else { return nil }
         // Archived playback keeps the program it was started for.
         guard !selection.isCatchup,
-              let row = model.channels.first(where: { $0.id == selection.channel.id }) else {
+              let row = model.channels.first(where: { $0.id == selection.channel.id }),
+              let program = row.currentProgram else {
             return selection
         }
-        return PlayerSelection(channel: row.channel, program: row.currentProgram)
+        return PlayerSelection(channel: row.channel, program: program)
     }
     #endif
 

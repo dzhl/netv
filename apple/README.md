@@ -43,8 +43,18 @@ channels and the three-hour schedule.
 
 ## Catchup and archive seeking
 
-For content with an upstream archive, open its guide context menu and choose
-**Start Over** or **Catch Up…**. On iPhone, iPad, and Mac, drag the archive timeline
+Use the guide's **Earlier**, **Now**, and **Later** buttons on every Apple platform
+to browse three-hour windows, up to seven days in either direction. The date and
+times use your device's time zone. Browsing does not interrupt playback.
+Select an available past program directly to play its upstream archive; unavailable
+past programs and upcoming programs are dimmed and cannot be selected. Selecting
+the stream name still opens live playback. **Now** returns the guide to the current
+window without changing what is playing.
+
+On Apple TV, focus a program and press Select to play it; select the playing program
+again to expand it. The context menu remains available for **Start Over** and
+**Catch Up…**, but is no longer required to browse earlier programs.
+On iPhone, iPad, and Mac, drag the archive timeline
 to preview a position and release to seek, or use the ten-second skip buttons.
 The timeline covers the full program, including portions not yet buffered.
 Seeking preserves whether playback was paused.
