@@ -1,0 +1,88 @@
+neTV Privacy Policy
+Effective date: September 20, 2026
+Publisher: Harvin Paul
+Privacy and support contact: paul.ankur@gmail.com
+
+Scope
+
+This policy covers the neTV apps for iPhone, iPad, Apple TV and Mac, and the
+publisher-operated demo and information pages at demo.tulane.casa. neTV is a
+player for a server you choose. It does not include a commercial television
+subscription.
+
+Information on your device
+
+The app stores your server address and last-played channel in its own local
+preferences. Apple's networking frameworks manage session cookies and may cache
+responses and artwork. The app does not intentionally save the password field
+in persistent storage; it sends your credentials to the server you select to
+sign in. Do not put passwords in a server address.
+
+The app writes operational diagnostics to the device's system log, including
+server endpoints, request timing, playback status and errors. These are not
+automatically uploaded to a separate developer analytics service. Avoid sending
+logs or screenshots containing credentials when asking for help.
+
+Your chosen server and content sources
+
+Signing in sends your username and password to your chosen server. Subsequent
+requests use its session cookie. The server receives guide and playback requests,
+channel identifiers and, for transcoded playback, buffering, throughput and
+playback-health measurements used to adjust quality and keep streams working.
+Network connections also disclose an IP address and ordinary request metadata
+to the receiving service.
+
+Artwork and direct media streams may come from hosts selected by your server.
+Those hosts receive the requests needed to display or play that content. If you
+use a server operated by someone else, its administrator and content providers
+control their own data handling, retention and deletion. The app does not send
+a copy of those requests to the publisher's demo server.
+
+Publisher-operated demo and website
+
+If you choose the demo server, the publisher operates that server and processes
+account identifiers, session information, requested channels, request times,
+playback performance and diagnostic logs to authenticate users, deliver the
+demo, troubleshoot problems and protect the service. These records can be
+associated with the account or session used, including the shared review account.
+
+Cloudflare provides the public connection to the demo and information pages.
+It processes IP addresses and request/security metadata to deliver and protect
+those services. Its handling is described at https://www.cloudflare.com/privacypolicy/.
+The app contains no advertising or third-party analytics SDK and does not use
+cross-app or cross-website advertising tracking.
+
+If you contact support, the publisher receives your email address, message and
+any diagnostic information you choose to send, and uses them to handle your
+request. Apple handles App Store purchases under Apple's own privacy policy;
+the app does not receive your payment-card details.
+
+Retention and your choices
+
+Local preferences remain until you remove the app's stored data. Signing out
+clears the selected server's session cookies, but does not erase the saved
+server address, last-played channel, all framework caches or system logs.
+Deleting an app on Mac may leave its container/preferences behind.
+
+Demo playback buffers and session files are temporary and cleaned up by the
+server. Account configuration remains until removed by the operator. Operational
+logs are retained according to the server and Cloudflare logging settings, not
+for a promised fixed duration. Support correspondence is retained as needed to
+handle the request and applicable obligations.
+
+For access, correction or deletion requests relating to publisher-operated
+services, contact paul.ankur@gmail.com. Do not include your password. For data on
+another person's server, contact that server's administrator. The publisher
+cannot remotely erase preferences or logs on your device.
+
+Connection security
+
+Use HTTPS whenever possible. To support user-managed servers, neTV also permits
+HTTP connections. HTTP does not encrypt your credentials, session or traffic
+in transit. Only use it on a network and with a server you trust.
+
+Updates
+
+Material changes to these practices will be reflected in an updated policy.
+The current published policy is available at:
+https://demo.tulane.casa/static/app/privacy.txt

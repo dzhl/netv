@@ -56,10 +56,11 @@ Apple TV audio to AirPlay speakers, use the system Control Center.
 
 ## Open and run
 
-1. Generate the project with `cd apple && xcodegen generate`.
-2. Open `apple/neTV.xcodeproj`.
-3. Select **neTV-iOS**, **neTV-tvOS**, or **neTV-macOS**, choose a destination, and run.
-4. Sign in with the same neTV server address and account used by the web UI.
+1. Copy `apple/.env.example` to `apple/.env`, then set your bundle identifier and Apple development team. The local `.env` is ignored by Git.
+2. Generate the project with `cd apple && xcodegen generate`.
+3. Open `apple/neTV.xcodeproj`.
+4. Select **neTV-iOS**, **neTV-tvOS**, or **neTV-macOS**, choose a destination, and run.
+5. Sign in with the same neTV server address and account used by the web UI.
 
 The development default is `http://localhost:8000`. HTTP transport is enabled because neTV commonly runs on a trusted local network; production deployments should use HTTPS.
 

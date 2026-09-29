@@ -71,6 +71,8 @@ them yourself:
 
 ```bash
 cd apple
+cp .env.example .env
+# Set NETV_BUNDLE_IDENTIFIER and NETV_DEVELOPMENT_TEAM in .env
 xcodegen generate
 open neTV.xcodeproj
 ```

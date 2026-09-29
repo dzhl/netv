@@ -1,0 +1,44 @@
+neTV Support
+Publisher: Harvin Paul
+Contact: paul.ankur@gmail.com
+
+Getting started
+
+Enter your neTV server's full address, username and password on the sign-in
+screen. Prefer an address beginning with https://. This version connects only
+to a neTV server. No commercial channels or television subscription are
+included.
+
+Your server administrator configures the available channels and guide
+categories. Use Settings > Refresh Guide to reload them. Server-side AI
+upscaling requires the appropriate server hardware and configuration; it does
+not run on your Apple device. The public review demo has AI upscaling disabled.
+
+Connection or playback problems
+
+Check the complete server address, including any required port. Confirm the
+server is running and reachable from your device's network. If using a local
+server, allow local-network access when prompted. HTTPS needs a valid server
+certificate. Settings > Sign Out lets you sign in again.
+
+If you forgot your password, ask the administrator of the server you use to
+reset it. The app does not provide a separate neTV-wide account or password
+reset service.
+
+Contacting support
+
+Email paul.ankur@gmail.com with your device model, operating-system version,
+app version, the steps to reproduce the problem and any displayed error.
+Remove passwords, session tokens and private stream URLs from screenshots or
+logs before sending them. Never send a password to support.
+
+Privacy and data requests
+
+The privacy policy is available in the app before and after signing in, and at:
+https://demo.tulane.casa/static/app/privacy.txt
+
+Send privacy requests about publisher-operated services to paul.ankur@gmail.com.
+For accounts or data on a third-party server, contact its administrator instead.
+
+Public support page:
+https://demo.tulane.casa/static/app/support.txt

@@ -18,6 +18,7 @@ cache/
 
 # Certificates
 *.pem
+/apple/.env
 
 # Tools - user data and generated files
 **/*.gz
@@ -25,3 +26,6 @@ cache/
 **/*.m3u
 **/*.xml
 tools/.zap2xml/
+
+# macOS
+.DS_Store
