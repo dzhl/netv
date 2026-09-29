@@ -44,15 +44,19 @@ struct GuideSidebar: View {
                         id: nil, name: "All Channels",
                         count: model.filteredChannels.count, icon: "rectangle.stack"
                     )
-                    Text("CATEGORIES")
-                        .font(.caption2.weight(.semibold))
-                        .tracking(1.5)
-                        .foregroundStyle(Theme.secondaryText)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 20)
-                        .padding(.bottom, 5)
                     let counts = categoryCounts
-                    ForEach(model.guideCategoryGroups) { category in
+                    let playlists = model.guideCategoryGroups.filter(\.isPlaylist)
+                    if !playlists.isEmpty {
+                        sectionHeader("PLAYLISTS")
+                        ForEach(playlists) { playlist in
+                            categoryButton(
+                                id: playlist.id, name: playlist.name,
+                                count: counts[playlist.id, default: 0], icon: "star"
+                            )
+                        }
+                    }
+                    sectionHeader("CATEGORIES")
+                    ForEach(model.guideCategoryGroups.filter { !$0.isPlaylist }) { category in
                         categoryButton(
                             id: category.id, name: category.name,
                             count: counts[category.id, default: 0], icon: "tv"
@@ -90,6 +94,16 @@ struct GuideSidebar: View {
                 self.selectedCategoryID = nil
             }
         }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption2.weight(.semibold))
+            .tracking(1.5)
+            .foregroundStyle(Theme.secondaryText)
+            .padding(.horizontal, 12)
+            .padding(.top, 20)
+            .padding(.bottom, 5)
     }
 
     private var categoryCounts: [String: Int] {

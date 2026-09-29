@@ -52,6 +52,7 @@ through their IPTV providers.
 - **Closed captions** with style customization
 - **Search** across all content (supports regex)
 - **Favorites** with drag-and-drop ordering
+- **Playlists** - Put your favorite content in playlists and organize them your way. Set them up on the web and they show up everywhere
 - **Resume playback** for VOD content
 - **Responsive** - works on desktop, tablet, mobile
 - **Keyboard navigation** - 10-foot UI friendly

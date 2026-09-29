@@ -1,0 +1,423 @@
+{% extends "base.html" %}
+{% block title %}Playlists - neTV{% endblock %}
+
+{% block head_extra %}
+<style>
+.pl-row.dragging { opacity: 0.4; }
+.pl-row.drop-above { box-shadow: inset 0 2px 0 rgb(59 130 246); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="flex flex-col h-full min-w-0">
+  <div class="flex items-baseline gap-3 mb-4">
+    <h2 class="text-3xl font-bold">Playlists</h2>
+    <p class="text-sm text-gray-400">Shared channel lists. They appear first in the Live TV guide on the web and in the apps.</p>
+  </div>
+
+  <div class="flex gap-4 flex-1 min-h-0">
+    <!-- Playlist list -->
+    <div class="w-64 flex-shrink-0 flex flex-col bg-gray-800 rounded p-3 min-h-0">
+      <form id="create-form" class="flex gap-1 mb-3">
+        <input id="create-name" type="text" maxlength="80" placeholder="New playlist name"
+               class="flex-1 min-w-0 px-2 py-1 bg-gray-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500">
+        <button class="px-2 py-1 text-sm bg-blue-600 hover:bg-blue-700 rounded">Add</button>
+      </form>
+      <div id="playlist-list" class="flex-1 overflow-y-auto space-y-1"></div>
+    </div>
+
+    <!-- Editor -->
+    <div id="editor" class="flex-1 min-w-0 flex flex-col min-h-0 hidden">
+      <div class="flex items-center gap-2 mb-3">
+        <input id="playlist-name" type="text" maxlength="80"
+               class="flex-1 min-w-0 px-2 py-1 bg-gray-800 rounded text-xl font-semibold focus:outline-none focus:ring-1 focus:ring-blue-500">
+        <span id="dirty" class="text-xs text-yellow-400 hidden">Unsaved changes</span>
+        <button id="save-btn" class="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 rounded">Save</button>
+        <button id="delete-btn" class="px-3 py-1 text-sm bg-red-700 hover:bg-red-600 rounded">Delete</button>
+      </div>
+
+      <div class="grid grid-cols-2 gap-4 flex-1 min-h-0">
+        <!-- Channels in playlist -->
+        <div class="flex flex-col bg-gray-800 rounded p-3 min-h-0">
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-sm text-gray-400"><span id="channel-count">0</span> channels · drag to reorder</div>
+            <div class="flex gap-2">
+              <button id="remove-missing-btn" class="text-xs text-gray-400 hover:text-white">Remove unavailable</button>
+              <button id="clear-btn" class="text-xs text-gray-400 hover:text-white">Clear</button>
+            </div>
+          </div>
+          <div id="channel-list" class="flex-1 overflow-y-auto space-y-1"></div>
+        </div>
+
+        <!-- Add channels -->
+        <div class="flex flex-col bg-gray-800 rounded p-3 min-h-0">
+          <div class="flex gap-2 mb-3 text-sm">
+            <button data-tab="search" class="tab-btn px-2 py-1 rounded bg-gray-600">Search</button>
+            <button data-tab="paste" class="tab-btn px-2 py-1 rounded bg-gray-700">Paste a list</button>
+            <input id="category-prefix" type="text" placeholder="Category prefix, e.g. US|"
+                   title="Only consider channels in categories starting with this text"
+                   class="ml-auto w-44 px-2 py-1 bg-gray-700 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+          </div>
+
+          <div id="tab-search" class="flex flex-col flex-1 min-h-0">
+            <div class="flex gap-2 mb-2">
+              <input id="search-q" type="text" placeholder="Search channels…"
+                     class="flex-1 min-w-0 px-2 py-1 bg-gray-700 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500">
+              <select id="search-category" class="w-48 px-1 py-1 bg-gray-700 rounded text-xs">
+                <option value="">All categories</option>
+              </select>
+            </div>
+            <div class="flex items-center justify-between mb-1">
+              <span id="search-status" class="text-xs text-gray-500"></span>
+              <button id="add-all-btn" class="text-xs text-blue-400 hover:text-blue-300 hidden">Add all shown</button>
+            </div>
+            <div id="search-results" class="flex-1 overflow-y-auto space-y-1"></div>
+          </div>
+
+          <div id="tab-paste" class="flex flex-col flex-1 min-h-0 hidden">
+            <textarea id="paste-lines" rows="6" placeholder="One channel per line, e.g.&#10;ABC 7 KGO&#10;ESPN&#10;FS1&#10;HGTV"
+                      class="w-full px-2 py-1 bg-gray-700 rounded text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"></textarea>
+            <div class="flex items-center gap-2 my-2">
+              <button id="match-btn" class="px-3 py-1 text-sm bg-gray-600 hover:bg-gray-500 rounded">Match</button>
+              <span id="match-status" class="text-xs text-gray-500"></span>
+              <button id="add-matches-btn" class="ml-auto px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 rounded hidden">Add selected</button>
+            </div>
+            <div id="match-results" class="flex-1 overflow-y-auto space-y-1"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="empty-state" class="flex-1 flex items-center justify-center text-gray-500">
+      Create a playlist to get started.
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  const $ = (id) => document.getElementById(id);
+  let playlists = [];
+  let current = null;   // {id, name, channels:[...]}
+  let dirty = false;
+
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  async function api(method, url, body) {
+    const resp = await fetch(url, {
+      method,
+      headers: body ? {'Content-Type': 'application/json'} : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!resp.ok) {
+      let msg = resp.statusText;
+      try { msg = (await resp.json()).detail || msg; } catch (e) {}
+      throw new Error(msg);
+    }
+    return resp.json();
+  }
+
+  function setDirty(value) {
+    dirty = value;
+    $('dirty').classList.toggle('hidden', !dirty);
+  }
+
+  function entryKey(ch) { return String(ch.stream_id || ('name:' + ch.source_id + ':' + ch.name)); }
+
+  function confirmDiscard() {
+    return !dirty || confirm('Discard unsaved changes?');
+  }
+
+  // ---- Playlist list -------------------------------------------------------
+
+  async function loadPlaylists(selectId) {
+    playlists = (await api('GET', '/api/playlists')).playlists;
+    renderPlaylistList();
+    const id = selectId || (current && current.id) || (playlists[0] && playlists[0].id);
+    if (id && playlists.some(p => p.id === id)) await selectPlaylist(id, true);
+    else showEditor(false);
+  }
+
+  function renderPlaylistList() {
+    const list = $('playlist-list');
+    list.replaceChildren();
+    playlists.forEach((p, i) => {
+      const row = el('div', 'flex items-center gap-1 px-2 py-1.5 rounded cursor-pointer text-sm ' +
+        (current && current.id === p.id ? 'bg-blue-600' : 'hover:bg-gray-700'));
+      const name = el('span', 'flex-1 truncate', p.name);
+      const count = el('span', 'text-xs text-gray-300', String(p.channel_count));
+      const up = el('button', 'text-xs px-1 text-gray-300 hover:text-white', '▲');
+      const down = el('button', 'text-xs px-1 text-gray-300 hover:text-white', '▼');
+      up.title = 'Move up'; down.title = 'Move down';
+      up.disabled = i === 0; down.disabled = i === playlists.length - 1;
+      up.onclick = (e) => { e.stopPropagation(); movePlaylist(i, -1); };
+      down.onclick = (e) => { e.stopPropagation(); movePlaylist(i, 1); };
+      row.append(name, count, up, down);
+      row.onclick = () => { if (!current || current.id !== p.id) { if (confirmDiscard()) selectPlaylist(p.id); } };
+      list.append(row);
+    });
+  }
+
+  async function movePlaylist(i, delta) {
+    const j = i + delta;
+    if (j < 0 || j >= playlists.length) return;
+    [playlists[i], playlists[j]] = [playlists[j], playlists[i]];
+    renderPlaylistList();
+    await api('POST', '/api/playlists/order', {ids: playlists.map(p => p.id)});
+  }
+
+  $('create-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const name = $('create-name').value.trim();
+    if (!name || !confirmDiscard()) return;
+    try {
+      const created = await api('POST', '/api/playlists', {name});
+      $('create-name').value = '';
+      setDirty(false);
+      await loadPlaylists(created.id);
+    } catch (err) { alert(err.message); }
+  };
+
+  // ---- Editor --------------------------------------------------------------
+
+  function showEditor(show) {
+    $('editor').classList.toggle('hidden', !show);
+    $('empty-state').classList.toggle('hidden', show);
+    if (!show) current = null;
+  }
+
+  async function selectPlaylist(id, keepDirty) {
+    current = await api('GET', '/api/playlists/' + encodeURIComponent(id));
+    if (!keepDirty) setDirty(false);
+    $('playlist-name').value = current.name;
+    showEditor(true);
+    renderPlaylistList();
+    renderChannels();
+  }
+
+  let dragIndex = null;
+
+  function renderChannels() {
+    const list = $('channel-list');
+    list.replaceChildren();
+    $('channel-count').textContent = current.channels.length;
+    current.channels.forEach((ch, i) => {
+      const row = el('div', 'pl-row flex items-center gap-2 px-2 py-1 bg-gray-700 rounded text-sm');
+      row.draggable = true;
+      row.append(el('span', 'text-gray-500 w-7 text-right text-xs', String(i + 1)));
+      const info = el('div', 'flex-1 min-w-0');
+      info.append(el('div', 'truncate' + (ch.available === false ? ' text-gray-500 line-through' : ''), ch.name));
+      const meta = ch.available === false ? 'Not in current channel data' : (ch.category || '');
+      info.append(el('div', 'truncate text-xs ' + (ch.available === false ? 'text-yellow-500' : 'text-gray-400'), meta));
+      row.append(info);
+      const up = el('button', 'text-xs px-1 text-gray-400 hover:text-white', '▲');
+      const down = el('button', 'text-xs px-1 text-gray-400 hover:text-white', '▼');
+      const remove = el('button', 'text-xs px-1 text-gray-400 hover:text-red-400', '✕');
+      up.title = 'Move up'; down.title = 'Move down'; remove.title = 'Remove';
+      up.onclick = () => moveChannel(i, i - 1);
+      down.onclick = () => moveChannel(i, i + 1);
+      remove.onclick = () => { current.channels.splice(i, 1); setDirty(true); renderChannels(); };
+      row.append(up, down, remove);
+
+      row.addEventListener('dragstart', () => { dragIndex = i; row.classList.add('dragging'); });
+      row.addEventListener('dragend', () => { dragIndex = null; row.classList.remove('dragging'); });
+      row.addEventListener('dragover', (e) => { e.preventDefault(); row.classList.add('drop-above'); });
+      row.addEventListener('dragleave', () => row.classList.remove('drop-above'));
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        row.classList.remove('drop-above');
+        if (dragIndex !== null) moveChannel(dragIndex, dragIndex < i ? i - 1 : i);
+      });
+      list.append(row);
+    });
+    // Allow dropping at the end of the list
+    const tail = el('div', 'h-8');
+    tail.addEventListener('dragover', (e) => e.preventDefault());
+    tail.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (dragIndex !== null) moveChannel(dragIndex, current.channels.length - 1);
+    });
+    list.append(tail);
+  }
+
+  function moveChannel(from, to) {
+    if (to < 0 || to >= current.channels.length || from === to) return;
+    const [item] = current.channels.splice(from, 1);
+    current.channels.splice(to, 0, item);
+    setDirty(true);
+    renderChannels();
+  }
+
+  function addChannels(items) {
+    const existing = new Set(current.channels.map(entryKey));
+    let added = 0;
+    for (const item of items) {
+      const key = entryKey(item);
+      if (existing.has(key)) continue;
+      existing.add(key);
+      current.channels.push({...item, available: true});
+      added++;
+    }
+    if (added) { setDirty(true); renderChannels(); }
+    return added;
+  }
+
+  $('playlist-name').oninput = () => setDirty(true);
+  $('clear-btn').onclick = () => {
+    if (current.channels.length && confirm('Remove all channels from this playlist?')) {
+      current.channels = []; setDirty(true); renderChannels();
+    }
+  };
+  $('remove-missing-btn').onclick = () => {
+    const before = current.channels.length;
+    current.channels = current.channels.filter(ch => ch.available !== false);
+    if (current.channels.length !== before) { setDirty(true); renderChannels(); }
+  };
+
+  $('save-btn').onclick = async () => {
+    try {
+      const channels = current.channels.map(ch => ({
+        stream_id: ch.stream_id, name: ch.name, source_id: ch.source_id || '', epg_channel_id: ch.epg_channel_id || '',
+      }));
+      await api('PUT', '/api/playlists/' + encodeURIComponent(current.id), {name: $('playlist-name').value, channels});
+      setDirty(false);
+      await loadPlaylists(current.id);
+    } catch (err) { alert(err.message); }
+  };
+
+  $('delete-btn').onclick = async () => {
+    if (!confirm('Delete playlist "' + current.name + '"?')) return;
+    await api('DELETE', '/api/playlists/' + encodeURIComponent(current.id));
+    current = null;
+    setDirty(false);
+    await loadPlaylists();
+  };
+
+  window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+
+  // ---- Tabs ----------------------------------------------------------------
+
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('.tab-btn').forEach(b => {
+        b.classList.toggle('bg-gray-600', b === btn);
+        b.classList.toggle('bg-gray-700', b !== btn);
+      });
+      $('tab-search').classList.toggle('hidden', btn.dataset.tab !== 'search');
+      $('tab-paste').classList.toggle('hidden', btn.dataset.tab !== 'paste');
+    };
+  });
+
+  const prefixInput = $('category-prefix');
+  prefixInput.value = localStorage.getItem('playlistCategoryPrefix') || '';
+  prefixInput.onchange = () => { localStorage.setItem('playlistCategoryPrefix', prefixInput.value); runSearch(); };
+
+  // ---- Search --------------------------------------------------------------
+
+  let searchResults = [];
+  let searchTimer = null;
+  let categoriesLoaded = false;
+
+  function channelResultRow(item, onAdd) {
+    const row = el('div', 'flex items-center gap-2 px-2 py-1 bg-gray-700 rounded text-sm');
+    const info = el('div', 'flex-1 min-w-0');
+    info.append(el('div', 'truncate', item.name));
+    info.append(el('div', 'truncate text-xs text-gray-400', item.category || ''));
+    const add = el('button', 'px-2 text-blue-400 hover:text-blue-300', '+');
+    add.title = 'Add to playlist';
+    add.onclick = onAdd;
+    row.append(info, add);
+    return row;
+  }
+
+  async function runSearch() {
+    const q = $('search-q').value.trim();
+    const category = $('search-category').value;
+    if (!q && !category) {
+      searchResults = [];
+      $('search-results').replaceChildren();
+      $('search-status').textContent = 'Type to search, or pick a category.';
+      $('add-all-btn').classList.add('hidden');
+      if (categoriesLoaded) return;
+    }
+    const params = new URLSearchParams({q, category_id: category, category_prefix: prefixInput.value, limit: '300'});
+    const data = await api('GET', '/api/playlists/search?' + params);
+    if (!categoriesLoaded) {
+      categoriesLoaded = true;
+      const select = $('search-category');
+      data.categories.forEach(c => {
+        const option = el('option', '', c.category_name);
+        option.value = c.category_id;
+        select.append(option);
+      });
+      if (!q && !category) return;
+    }
+    searchResults = data.results;
+    const list = $('search-results');
+    list.replaceChildren();
+    searchResults.forEach(item => {
+      list.append(channelResultRow(item, () => addChannels([item])));
+    });
+    $('search-status').textContent = searchResults.length + (searchResults.length >= 300 ? '+' : '') + ' results';
+    $('add-all-btn').classList.toggle('hidden', !searchResults.length);
+  }
+
+  $('search-q').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 250); };
+  $('search-category').onchange = runSearch;
+  $('add-all-btn').onclick = () => addChannels(searchResults);
+
+  // ---- Paste & match -------------------------------------------------------
+
+  let matches = [];
+
+  $('match-btn').onclick = async () => {
+    const lines = $('paste-lines').value.split('\n').map(s => s.trim()).filter(Boolean);
+    if (!lines.length) return;
+    $('match-status').textContent = 'Matching…';
+    try {
+      matches = (await api('POST', '/api/playlists/match', {lines, category_prefix: prefixInput.value})).matches;
+    } catch (err) { $('match-status').textContent = err.message; return; }
+    const found = matches.filter(m => m.candidates.length).length;
+    $('match-status').textContent = found + ' of ' + matches.length + ' matched';
+    const list = $('match-results');
+    list.replaceChildren();
+    matches.forEach((m, i) => {
+      const row = el('div', 'flex items-center gap-2 px-2 py-1 bg-gray-700 rounded text-sm');
+      row.append(el('span', 'w-1/3 truncate ' + (m.candidates.length ? '' : 'text-yellow-500'), m.query));
+      const select = el('select', 'flex-1 min-w-0 px-1 py-0.5 bg-gray-800 rounded text-xs');
+      select.dataset.index = i;
+      m.candidates.forEach((c, j) => {
+        const option = el('option', '', c.name + (c.category ? '  —  ' + c.category : ''));
+        option.value = String(j);
+        select.append(option);
+      });
+      const skip = el('option', '', m.candidates.length ? 'Skip' : 'No match');
+      skip.value = '';
+      select.append(skip);
+      row.append(select);
+      list.append(row);
+    });
+    $('add-matches-btn').classList.toggle('hidden', !found);
+  };
+
+  $('add-matches-btn').onclick = () => {
+    const chosen = [];
+    document.querySelectorAll('#match-results select').forEach(select => {
+      if (select.value === '') return;
+      chosen.push(matches[Number(select.dataset.index)].candidates[Number(select.value)]);
+    });
+    const added = addChannels(chosen);
+    $('match-status').textContent = 'Added ' + added + ' channels (save to keep them)';
+  };
+
+  loadPlaylists().then(runSearch).catch(err => alert(err.message));
+})();
+</script>
+{% endblock %}

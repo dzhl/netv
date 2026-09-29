@@ -1152,3 +1152,169 @@ class TestPlaybackHealth:
         ):
             assert auth_client.delete("/transcode/live?force=true").status_code == 404
         stop.assert_not_called()
+
+
+class TestPlaylists:
+    @pytest.fixture(autouse=True)
+    def live_data(self, auth_client):
+        cache_module.get_cache()["live_categories"] = [
+            {"category_id": "1", "category_name": "News"},
+            {"category_id": "2", "category_name": "Sports"},
+        ]
+        cache_module.get_cache()["live_streams"] = [
+            {"stream_id": 1, "name": "CNN", "category_ids": ["1"], "epg_channel_id": "", "source_id": "s"},
+            {"stream_id": 2, "name": "ESPN", "category_ids": ["2"], "epg_channel_id": "", "source_id": "s"},
+            {"stream_id": 3, "name": "FS1", "category_ids": ["2"], "epg_channel_id": "", "source_id": "s"},
+        ]
+
+    def _create(self, client, name="Favorites", ids=(3, 1)):
+        streams = {s["stream_id"]: s for s in cache_module.get_cache()["live_streams"]}
+        channels = [{"stream_id": i, "name": streams[i]["name"], "source_id": "s"} for i in ids]
+        resp = client.post("/api/playlists", json={"name": name, "channels": channels})
+        assert resp.status_code == 200
+        return resp.json()
+
+    def test_guide_rows_prepend_playlists_for_app_requests(self, auth_client):
+        playlist = self._create(auth_client)
+
+        payload = auth_client.get("/api/guide/rows?cats=1,2").json()
+
+        assert [r["channel"]["stream_id"] for r in payload["rows"]] == [3, 1, 2]
+        assert payload["rows"][0]["channel"]["category_ids"] == ["2", playlist["category_id"]]
+        assert payload["categories"][0] == {
+            "category_id": playlist["category_id"],
+            "category_name": "Favorites",
+            "kind": "playlist",
+        }
+        assert [c["category_id"] for c in payload["categories"][1:]] == ["1", "2"]
+
+    def test_guide_rows_exact_skips_playlists(self, auth_client):
+        self._create(auth_client)
+
+        payload = auth_client.get("/api/guide/rows?cats=2&exact=1").json()
+
+        assert [r["channel"]["stream_id"] for r in payload["rows"]] == [2, 3]
+        assert [c["category_id"] for c in payload["categories"]] == ["2"]
+
+    def test_guide_rows_single_playlist_keeps_playlist_order(self, auth_client):
+        playlist = self._create(auth_client, ids=(2, 3, 1))
+
+        payload = auth_client.get(f"/api/guide/rows?cats={playlist['category_id']}").json()
+
+        assert [r["channel"]["stream_id"] for r in payload["rows"]] == [2, 3, 1]
+
+    def test_guide_page_defaults_to_playlists_then_filter(self, auth_client):
+        playlist = self._create(auth_client)
+        auth_client.post("/settings/guide-filter", json={"cats": ["1"]})
+        with patch("main.epg.has_programs", return_value=True):
+            resp = auth_client.get("/guide")
+        assert resp.status_code == 200
+        assert "★ Favorites" in resp.text
+        assert f'"{playlist["category_id"]},1"' in resp.text
+
+    def test_empty_playlists_are_hidden_from_guide(self, auth_client):
+        auth_client.post("/api/playlists", json={"name": "Empty"})
+        payload = auth_client.get("/api/guide/rows?cats=1").json()
+        assert [c["category_id"] for c in payload["categories"]] == ["1"]
+
+    def test_update_rename_reorder_delete(self, auth_client):
+        first = self._create(auth_client, "A")
+        second = self._create(auth_client, "B")
+
+        resp = auth_client.put(f"/api/playlists/{first['id']}", json={"name": "A2", "channels": []})
+        assert resp.json()["name"] == "A2"
+        auth_client.post("/api/playlists/order", json={"ids": [second["id"], first["id"]]})
+        assert [p["name"] for p in auth_client.get("/api/playlists").json()["playlists"]] == ["B", "A2"]
+        assert auth_client.delete(f"/api/playlists/{second['id']}").status_code == 200
+        assert auth_client.get(f"/api/playlists/{second['id']}").status_code == 404
+
+    def test_playlist_reports_unavailable_channels(self, auth_client):
+        playlist = self._create(auth_client)
+        auth_client.put(
+            f"/api/playlists/{playlist['id']}",
+            json={"channels": [{"stream_id": 42, "name": "Gone", "source_id": "s"}]},
+        )
+        channels = auth_client.get(f"/api/playlists/{playlist['id']}").json()["channels"]
+        assert channels == [
+            {"stream_id": "42", "name": "Gone", "source_id": "s", "epg_channel_id": "", "available": False}
+        ]
+
+    def test_match_and_search(self, auth_client):
+        matches = auth_client.post("/api/playlists/match", json={"lines": ["ESPN", ""]}).json()["matches"]
+        assert [(m["query"], m["candidates"][0]["stream_id"]) for m in matches] == [("ESPN", "2")]
+        results = auth_client.get("/api/playlists/search?category_id=2").json()["results"]
+        assert [r["stream_id"] for r in results] == ["2", "3"]
+
+    def test_non_admin_can_read_but_not_edit(self, auth_client):
+        import auth
+
+        playlist = self._create(auth_client)
+        auth.create_user("viewer", "viewerpass1")
+        auth_client.cookies.set("token", auth.create_token({"sub": "viewer"}))
+
+        assert auth_client.get("/api/playlists").status_code == 200
+        assert auth_client.get(f"/api/playlists/{playlist['id']}").status_code == 200
+        assert auth_client.post("/api/playlists", json={"name": "X"}).status_code == 403
+        assert auth_client.put(f"/api/playlists/{playlist['id']}", json={"name": "X"}).status_code == 403
+        assert auth_client.delete(f"/api/playlists/{playlist['id']}").status_code == 403
+        assert auth_client.get("/playlists").status_code == 403
+        rows = auth_client.get("/api/guide/rows?cats=1").json()["rows"]
+        assert [r["channel"]["stream_id"] for r in rows] == [3, 1]
+
+    def test_admin_page_renders(self, auth_client):
+        resp = auth_client.get("/playlists")
+        assert resp.status_code == 200
+        assert 'id="playlist-list"' in resp.text
+
+    def test_same_stream_id_from_two_sources_is_kept(self, auth_client):
+        cache_module.get_cache()["live_streams"].append(
+            {"stream_id": 1, "name": "BBC", "category_ids": ["1"], "epg_channel_id": "", "source_id": "t"}
+        )
+        resp = auth_client.post(
+            "/api/playlists",
+            json={"name": "Mix", "channels": [{"stream_id": 1, "name": "BBC", "source_id": "t"}]},
+        )
+        playlist = resp.json()
+
+        rows = auth_client.get("/api/guide/rows?cats=1").json()["rows"]
+
+        assert [(r["channel"]["stream_id"], r["channel"]["name"]) for r in rows] == [(1, "BBC"), (1, "CNN")]
+        assert playlist["category_id"] in rows[0]["channel"]["category_ids"]
+        assert playlist["category_id"] not in rows[1]["channel"]["category_ids"]
+
+    def test_restricted_viewer_does_not_see_restricted_playlist_channels(self, auth_client):
+        import auth
+
+        playlist = self._create(auth_client, ids=(3, 1))
+        only_sports = self._create(auth_client, "Sports", ids=(3,))
+        auth.create_user("viewer", "viewerpass1")
+        auth.set_user_limits("viewer", unavailable_groups=["cat:2"])
+        auth_client.cookies.set("token", auth.create_token({"sub": "viewer"}))
+
+        listed = auth_client.get("/api/playlists").json()["playlists"]
+        assert [(p["id"], p["channel_count"]) for p in listed] == [(playlist["id"], 1)]
+        detail = auth_client.get(f"/api/playlists/{playlist['id']}").json()
+        assert [c["name"] for c in detail["channels"]] == ["CNN"]
+        assert auth_client.get(f"/api/playlists/{only_sports['id']}").json()["channels"] == []
+        rows = auth_client.get("/api/guide/rows?cats=1").json()["rows"]
+        assert [r["channel"]["stream_id"] for r in rows] == [1]
+
+    def test_invalid_create_does_not_persist(self, auth_client):
+        too_many = [{"stream_id": i, "name": str(i)} for i in range(2001)]
+        assert auth_client.post("/api/playlists", json={"name": "Big", "channels": too_many}).status_code == 400
+        assert auth_client.get("/api/playlists").json()["playlists"] == []
+
+    def test_saved_view_drops_deleted_playlist(self, auth_client):
+        import main
+
+        playlist = self._create(auth_client)
+        auth_client.post("/settings/guide-filter", json={"cats": ["1"]})
+        auth_client.post("/api/user-prefs", json={"guide_selected_cats": [playlist["category_id"]]})
+        auth_client.delete(f"/api/playlists/{playlist['id']}")
+
+        with patch("main.epg.has_programs", return_value=True):
+            resp = auth_client.get("/guide")
+
+        assert resp.status_code == 200
+        assert "CNN" in resp.text
+        assert main.load_user_settings("testuser").get("guide_selected_cats") is None

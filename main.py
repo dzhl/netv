@@ -99,6 +99,7 @@ import casting
 import epg
 import ffmpeg_command
 import ffmpeg_session
+import playlists
 
 
 log = logging.getLogger()
@@ -670,10 +671,23 @@ async def guide_page(
     saved_filter = set(saved_filter_list)  # For fast lookup
     # Build ordered list of category objects matching user's saved order
     cat_by_id = {str(c["category_id"]): c for c in categories}
-    ordered_filter_cats = [cat_by_id[cid] for cid in saved_filter_list if cid in cat_by_id]
+    playlist_cats = _playlist_categories()
+    ordered_filter_cats = [
+        {**c, "category_name": f"★ {c['category_name']}"} for c in playlist_cats
+    ] + [cat_by_id[cid] for cid in saved_filter_list if cid in cat_by_id]
+    saved_filter |= {c["category_id"] for c in playlist_cats}
 
     # Get saved VIEW selection (separate from Settings filter)
     saved_view_cats = user_settings.get("guide_selected_cats")  # None = show all
+    if saved_view_cats:
+        # Drop playlists deleted since the view was saved; fall back to the
+        # default view if nothing remains.
+        live_playlist_ids = {c["category_id"] for c in playlist_cats}
+        kept = [c for c in saved_view_cats if not playlists.is_playlist_id(c) or c in live_playlist_ids]
+        if len(kept) != len(saved_view_cats):
+            saved_view_cats = kept or None
+            user_settings["guide_selected_cats"] = saved_view_cats
+            save_user_settings(username, user_settings)
 
     # Determine effective cats: URL param (if present) > saved view > all from filter
     if cats_in_url:
@@ -683,8 +697,8 @@ async def guide_page(
         # Use saved view selection (could be [] for "none")
         effective_cats = ",".join(saved_view_cats)
     else:
-        # Default: show all from settings filter
-        effective_cats = ",".join(saved_filter_list)
+        # Default: shared playlists, then everything from the settings filter
+        effective_cats = ",".join(_default_guide_cats(saved_filter_list, playlist_cats))
 
     # Use helper to get filtered/sorted streams
     streams, ordered_cats, selected_cats = _get_guide_streams(effective_cats, username)
@@ -768,10 +782,7 @@ def _get_guide_streams(cats: str, username: str) -> tuple[list[dict], list[str],
     if not selected_cats:
         return [], ordered_cats, selected_cats
 
-    # Get user's unavailable groups for filtering
-    user_limits = auth.get_user_limits(username)
-    unavailable_groups = set(user_limits.get("unavailable_groups", []))
-
+    stream_allowed = _live_stream_filter(username)
     cat_order = {c: i for i, c in enumerate(ordered_cats)}
 
     def stream_sort_key(s: dict) -> int:
@@ -780,18 +791,82 @@ def _get_guide_streams(cats: str, username: str) -> tuple[list[dict], list[str],
                 return cat_order[str(c)]
         return len(ordered_cats)
 
+    playlist_ids = [c for c in ordered_cats if playlists.is_playlist_id(c)]
+    category_cats = selected_cats.difference(playlist_ids)
+    streams = [
+        s
+        for s in all_streams
+        if any(str(c) in category_cats for c in (s.get("category_ids") or [])) and stream_allowed(s)
+    ]
+    streams.sort(key=stream_sort_key)
+    if not playlist_ids:
+        return streams, ordered_cats, selected_cats
+
+    # Playlist channels appear once, at their earliest selected position. Their
+    # rows carry the playlist ids so clients can group them like categories.
+    playlist_by_id = {f"{playlists.PREFIX}{p['id']}": p for p in playlists.load()}
+    placement: dict[str, tuple[int, int]] = {}
+    memberships: dict[str, list[str]] = {}
+    stream_by_key: dict[str, dict] = {}
+    for playlist_id in playlist_ids:
+        playlist = playlist_by_id.get(playlist_id)
+        if playlist is None:
+            continue
+        for position, s in enumerate(playlists.resolve(playlist, all_streams)):
+            if not stream_allowed(s):
+                continue
+            key = playlists.stream_key(s)
+            memberships.setdefault(key, []).append(playlist_id)
+            stream_by_key[key] = s
+            placement.setdefault(key, (cat_order[playlist_id], position))
+    for position, s in enumerate(streams):
+        key = playlists.stream_key(s)
+        rank = (stream_sort_key(s), position)
+        stream_by_key.setdefault(key, s)
+        if key not in placement or rank[0] < placement[key][0]:
+            placement[key] = rank
+
+    merged = []
+    for key in sorted(placement, key=placement.__getitem__):
+        s = stream_by_key[key]
+        if key in memberships:
+            s = {**s, "category_ids": [*(s.get("category_ids") or []), *memberships[key]]}
+        merged.append(s)
+    return merged, ordered_cats, selected_cats
+
+
+def _live_stream_filter(username: str):
+    """Predicate for live streams the user may see (category restrictions)."""
+    unavailable_groups = set(auth.get_user_limits(username).get("unavailable_groups", []))
+
     def stream_allowed(s: dict) -> bool:
         cat_ids = s.get("category_ids") or []
         return not any(f"cat:{c}" in unavailable_groups for c in cat_ids)
 
-    streams = [
-        s
-        for s in all_streams
-        if any(str(c) in selected_cats for c in (s.get("category_ids") or [])) and stream_allowed(s)
-    ]
-    streams.sort(key=stream_sort_key)
+    return stream_allowed
 
-    return streams, ordered_cats, selected_cats
+
+def _playlist_categories() -> list[dict[str, str]]:
+    """Non-empty shared playlists as guide categories, in admin-defined order."""
+    return [
+        {
+            "category_id": f"{playlists.PREFIX}{p['id']}",
+            "category_name": p["name"],
+            "kind": "playlist",
+        }
+        for p in playlists.load()
+        if p.get("channels")
+    ]
+
+
+def _default_guide_cats(
+    saved_filter: list[str], playlist_cats: list[dict[str, str]] | None = None
+) -> list[str]:
+    if playlist_cats is None:
+        playlist_cats = _playlist_categories()
+    return [c["category_id"] for c in playlist_cats] + [
+        c for c in saved_filter if not playlists.is_playlist_id(c)
+    ]
 
 
 def _build_guide_rows(
@@ -894,16 +969,20 @@ async def guide_rows_api(
     count: int = Query(default=130, ge=1, le=500, description="Number of rows to fetch"),
     offset: int = Query(default=0, ge=-168, le=168, description="Hours offset from now"),
     cats: str = "",
+    exact: bool = Query(default=False, description="Use cats as-is, without adding playlists"),
 ):
     """API endpoint for virtual scrolling - returns guide rows as JSON."""
     username = user.get("sub", "")
 
-    # Use saved filter if no cats provided
-    if not cats:
+    # Use saved filter if no cats provided. Clients that send category ids
+    # (like the Apple apps) also get the shared playlists unless exact is set.
+    requested = [c.strip() for c in cats.split(",") if c.strip()]
+    if not requested:
         user_settings = load_user_settings(username)
-        saved = user_settings.get("guide_filter", [])
-        if saved:
-            cats = ",".join(saved)
+        requested = user_settings.get("guide_filter", [])
+    if not exact and not any(playlists.is_playlist_id(c) for c in requested):
+        requested = _default_guide_cats(requested)
+    cats = ",".join(requested)
 
     # Ensure data is loaded
     if "live_streams" not in get_cache():
@@ -925,6 +1004,7 @@ async def guide_rows_api(
         str(category["category_id"]): category
         for category in get_cache().get("live_categories", [])
     }
+    category_by_id.update({c["category_id"]: c for c in _playlist_categories()})
     populated_category_ids = {
         str(category_id)
         for stream in streams
@@ -934,6 +1014,7 @@ async def guide_rows_api(
         {
             "category_id": category_id,
             "category_name": category_by_id[category_id]["category_name"],
+            **({"kind": "playlist"} if playlists.is_playlist_id(category_id) else {}),
         }
         for category_id in ordered_cat_ids
         if category_id in category_by_id and category_id in populated_category_ids
@@ -2754,6 +2835,176 @@ async def save_user_prefs(
         if key in data:
             settings[key] = data[key]
     save_user_settings(username, settings)
+    return {"ok": True}
+
+
+# =============================================================================
+# Shared playlists (curated in the web UI; clients read them via the guide)
+# =============================================================================
+
+
+async def _live_streams_and_category_names() -> tuple[list[dict], dict[str, str]]:
+    if "live_streams" not in get_cache():
+        cached = await asyncio.to_thread(load_file_cache, "live_data")
+        if cached:
+            data, _ = cached
+            with get_cache_lock():
+                get_cache()["live_categories"] = data["cats"]
+                get_cache()["live_streams"] = data["streams"]
+                get_cache()["epg_urls"] = parse_epg_urls(data.get("epg_urls", []))
+    streams = get_cache().get("live_streams", [])
+    names = {
+        str(c["category_id"]): c.get("category_name", "")
+        for c in get_cache().get("live_categories", [])
+    }
+    return streams, names
+
+
+def _playlist_payload(
+    playlist: dict,
+    streams: list[dict],
+    category_names: dict[str, str],
+    username: str | None = None,
+) -> dict[str, Any]:
+    """Playlist with resolved channels.
+
+    Admins (username=None) see every entry, including unavailable ones; other
+    users only see channels they are allowed to watch.
+    """
+    stream_allowed = _live_stream_filter(username) if username is not None else None
+    channels = []
+    for entry in playlist.get("channels", []):
+        stream = playlists.resolve_channel(entry, streams)
+        if stream_allowed is not None and (stream is None or not stream_allowed(stream)):
+            continue
+        channel = playlists.summarize(stream, category_names) if stream else dict(entry)
+        channel["available"] = stream is not None
+        channels.append(channel)
+    return {
+        "id": playlist["id"],
+        "category_id": f"{playlists.PREFIX}{playlist['id']}",
+        "name": playlist["name"],
+        "channels": channels,
+    }
+
+
+async def _json_body(request: Request, limit: int = 1024 * 1024) -> dict[str, Any]:
+    body = await request.body()
+    if len(body) > limit:
+        raise HTTPException(400, "Request too large")
+    try:
+        data = json.loads(body or b"{}")
+    except ValueError as e:
+        raise HTTPException(400, "Invalid JSON") from e
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Expected a JSON object")
+    return data
+
+
+@app.get("/playlists", response_class=HTMLResponse)
+async def playlists_page(request: Request, _user: Annotated[dict, Depends(require_admin)]):
+    return TEMPLATES.TemplateResponse(request, "playlists.html", {})
+
+
+def _payload_viewer(user: dict) -> str | None:
+    """None for admins (full view), else the username to apply restrictions for."""
+    username = user.get("sub", "")
+    return None if auth.is_admin(username) else username
+
+
+@app.get("/api/playlists")
+async def list_playlists(user: Annotated[dict, Depends(require_auth)]):
+    viewer = _payload_viewer(user)
+    streams, names = await _live_streams_and_category_names()
+    result = []
+    for p in playlists.load():
+        payload = _playlist_payload(p, streams, names, viewer)
+        if viewer is not None and not payload["channels"]:
+            continue
+        result.append(
+            {
+                "id": p["id"],
+                "category_id": payload["category_id"],
+                "name": p["name"],
+                "channel_count": len(payload["channels"]),
+            }
+        )
+    return {"playlists": result}
+
+
+@app.get("/api/playlists/search")
+async def search_playlist_channels(
+    _user: Annotated[dict, Depends(require_admin)],
+    q: str = "",
+    category_id: str = "",
+    category_prefix: str = "",
+    limit: int = Query(default=200, ge=1, le=1000),
+):
+    streams, names = await _live_streams_and_category_names()
+    results = await asyncio.to_thread(
+        playlists.search, streams, names, q, category_id, category_prefix, limit
+    )
+    categories = [{"category_id": cid, "category_name": name} for cid, name in names.items()]
+    return {"results": results, "categories": categories}
+
+
+@app.post("/api/playlists/match")
+async def match_playlist_channels(request: Request, _user: Annotated[dict, Depends(require_admin)]):
+    data = await _json_body(request)
+    lines = [str(line) for line in data.get("lines", []) if str(line).strip()][:1000]
+    streams, names = await _live_streams_and_category_names()
+    matches = await asyncio.to_thread(
+        playlists.match_names, lines, streams, names, str(data.get("category_prefix", ""))
+    )
+    return {"matches": matches}
+
+
+@app.post("/api/playlists/order")
+async def reorder_playlists(request: Request, _user: Annotated[dict, Depends(require_admin)]):
+    data = await _json_body(request)
+    ids = [str(i) for i in data.get("ids", [])]
+    return {"playlists": [p["id"] for p in playlists.reorder(ids)]}
+
+
+@app.post("/api/playlists")
+async def create_playlist(request: Request, _user: Annotated[dict, Depends(require_admin)]):
+    data = await _json_body(request)
+    try:
+        playlist = playlists.create(data.get("name", ""), data.get("channels"))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    streams, names = await _live_streams_and_category_names()
+    return _playlist_payload(playlist, streams, names)
+
+
+@app.get("/api/playlists/{playlist_id}")
+async def get_playlist(playlist_id: str, user: Annotated[dict, Depends(require_auth)]):
+    playlist = playlists.get(playlist_id)
+    if playlist is None:
+        raise HTTPException(404, "Playlist not found")
+    streams, names = await _live_streams_and_category_names()
+    return _playlist_payload(playlist, streams, names, _payload_viewer(user))
+
+
+@app.put("/api/playlists/{playlist_id}")
+async def update_playlist(
+    playlist_id: str, request: Request, _user: Annotated[dict, Depends(require_admin)]
+):
+    data = await _json_body(request)
+    try:
+        playlist = playlists.update(playlist_id, data.get("name"), data.get("channels"))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    if playlist is None:
+        raise HTTPException(404, "Playlist not found")
+    streams, names = await _live_streams_and_category_names()
+    return _playlist_payload(playlist, streams, names)
+
+
+@app.delete("/api/playlists/{playlist_id}")
+async def delete_playlist(playlist_id: str, _user: Annotated[dict, Depends(require_admin)]):
+    if not playlists.delete(playlist_id):
+        raise HTTPException(404, "Playlist not found")
     return {"ok": True}
 
 

@@ -23,16 +23,20 @@ struct GuideResponse: Decodable {
 struct GuideCategory: Decodable, Identifiable, Hashable {
     let id: String
     let name: String
+    /// Shared playlists curated in the neTV web UI arrive as categories with kind "playlist".
+    let isPlaylist: Bool
 
     enum CodingKeys: String, CodingKey {
         case id = "category_id"
         case name = "category_name"
+        case kind
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(FlexibleID.self, forKey: .id).value
         name = try container.decode(String.self, forKey: .name)
+        isPlaylist = try container.decodeIfPresent(String.self, forKey: .kind) == "playlist"
     }
 }
 
@@ -40,11 +44,19 @@ struct GuideCategoryGroup: Identifiable, Hashable {
     let id: String
     let name: String
     var categoryIDs: Set<String>
+    var isPlaylist = false
 
     static func distinct(_ categories: [GuideCategory]) -> [GuideCategoryGroup] {
         var groups: [GuideCategoryGroup] = []
         var indexByName: [String: Int] = [:]
         for category in categories {
+            if category.isPlaylist {
+                groups.append(GuideCategoryGroup(
+                    id: "playlist:\(category.id)", name: category.name,
+                    categoryIDs: [category.id], isPlaylist: true
+                ))
+                continue
+            }
             let trimmed = category.name.trimmingCharacters(in: .whitespacesAndNewlines)
             let name = trimmed.isEmpty ? "Uncategorized" : trimmed
             let key = name.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))

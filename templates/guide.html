@@ -311,7 +311,7 @@
 const GUIDE_CONFIG = {
   totalRows: {{ total_count | default(0) }},
   offset: {{ offset }},
-  cats: {{ cats_param | tojson }},
+  cats: {{ (effective_cats if effective_cats is defined else cats_param) | tojson }},
   initialRows: {{ grid_data | tojson | safe }},
   // Logo URL proxy (matches _logo_url_filter in Python)
   logoUrlFilter: function(url) {

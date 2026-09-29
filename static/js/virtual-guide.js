@@ -346,6 +346,7 @@ class VirtualGuide {
       // Pass cats if set (for temporary dropdown filters)
       if (this.cats) {
         params.set('cats', this.cats);
+        params.set('exact', '1');
       }
 
       const resp = await fetch(`/api/guide/rows?${params}`, {
