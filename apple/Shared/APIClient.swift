@@ -25,6 +25,8 @@ struct PlaybackConfiguration {
     let url: URL
     let cookieHeader: String?
     let transcodeSessionID: String?
+    var archiveStart: Double?
+    var archiveSeek: Double?
 }
 
 final class APIClient {
@@ -35,12 +37,16 @@ final class APIClient {
         category: "API"
     )
 
-    init() {
+    init(session: URLSession? = nil) {
+        if let session {
+            self.session = session
+            return
+        }
         let configuration = URLSessionConfiguration.default
         configuration.httpCookieStorage = .shared
         configuration.httpShouldSetCookies = true
         configuration.timeoutIntervalForRequest = 60
-        session = URLSession(configuration: configuration)
+        self.session = URLSession(configuration: configuration)
     }
 
     func login(server: String, username: String, password: String) async throws -> URL {
@@ -83,7 +89,7 @@ final class APIClient {
         return http.statusCode == 200
     }
 
-    func guide(server: String) async throws -> GuideResponse {
+    func guide(server: String, offset: Int = 0) async throws -> GuideResponse {
         guard let baseURL = normalizedServerURL(server) else {
             throw APIError.invalidServer
         }
@@ -93,7 +99,7 @@ final class APIClient {
         components?.queryItems = [
             URLQueryItem(name: "start", value: "0"),
             URLQueryItem(name: "count", value: "500"),
-            URLQueryItem(name: "offset", value: "0"),
+            URLQueryItem(name: "offset", value: String(offset)),
             URLQueryItem(name: "cats", value: categories)
         ]
         guard let url = components?.url else { throw APIError.invalidServer }
@@ -103,7 +109,7 @@ final class APIClient {
             components?.queryItems = [
                 URLQueryItem(name: "start", value: String(guide.rows.count)),
                 URLQueryItem(name: "count", value: "500"),
-                URLQueryItem(name: "offset", value: "0"),
+                URLQueryItem(name: "offset", value: String(offset)),
                 URLQueryItem(name: "cats", value: categories)
             ]
             guard let pageURL = components?.url else { throw APIError.invalidServer }
@@ -151,8 +157,9 @@ final class APIClient {
         }
 
         let transcodeMode = playerConfigString("transcodeMode", in: html) ?? "auto"
+        var configuration: PlaybackConfiguration
         if transcodeMode == "always" {
-            return try await startTranscode(
+            configuration = try await startTranscode(
                 baseURL: baseURL,
                 rawURL: rawURL,
                 sourceID: playerConfigString("sourceId", in: html) ?? "",
@@ -160,13 +167,23 @@ final class APIClient {
                 bandwidthSaver: bandwidthSaver,
                 archive: catchupStart != nil
             )
+        } else {
+            configuration = PlaybackConfiguration(
+                url: rawURL,
+                cookieHeader: cookieHeader(for: rawURL),
+                transcodeSessionID: nil
+            )
         }
+        if catchupStart != nil {
+            configuration.archiveStart = playerConfigNumber("catchupStart", in: html)
+            configuration.archiveSeek = playerConfigNumber("catchupSeek", in: html)
+        }
+        return configuration
+    }
 
-        return PlaybackConfiguration(
-            url: rawURL,
-            cookieHeader: cookieHeader(for: rawURL),
-            transcodeSessionID: nil
-        )
+    func keepArchiveAlive(server: String, sessionID: String) async throws {
+        guard let baseURL = normalizedServerURL(server) else { throw APIError.invalidServer }
+        let _: ArchiveProgress = try await get("transcode/progress/\(sessionID)", baseURL: baseURL)
     }
 
     func cookieHeader(for url: URL) -> String? {
@@ -339,6 +356,16 @@ final class APIClient {
         return String(html[valueRange]) == "true"
     }
 
+    private func playerConfigNumber(_ key: String, in html: String) -> Double? {
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+        let pattern = #"\b\#(escapedKey)\s*:\s*(-?\d+(?:\.\d+)?)"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let range = Range(match.range(at: 1), in: html),
+              let value = Double(html[range]), value.isFinite else { return nil }
+        return value
+    }
+
     private func normalizedServerURL(_ value: String) -> URL? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let withScheme = trimmed.contains("://") ? trimmed : "http://\(trimmed)"
@@ -363,6 +390,10 @@ private struct TranscodeResponse: Decodable {
         case sessionID = "session_id"
         case playlist
     }
+}
+
+private struct ArchiveProgress: Decodable {
+    let duration: Double
 }
 
 struct PlaybackHealth: Encodable {

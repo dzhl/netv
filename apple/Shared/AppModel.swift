@@ -12,6 +12,9 @@ final class AppModel: ObservableObject {
     @Published var guideWindowStart = Date(
         timeIntervalSince1970: floor(Date().timeIntervalSince1970 / 3600) * 3600
     )
+    @Published private(set) var guideOffset = 0
+    @Published private(set) var requestedGuideOffset = 0
+    private var guideLoadGeneration = 0
     @Published var query = ""
     @Published var errorMessage: String?
     @Published var selection: PlayerSelection?
@@ -22,6 +25,8 @@ final class AppModel: ObservableObject {
     #if os(tvOS)
     @Published var playPauseRequest: UUID?
     @Published var playerActivity: UUID?
+    @Published var seekBackwardRequest: UUID?
+    @Published var seekForwardRequest: UUID?
     #endif
 
     // Carry the server's current quality decision across channel changes.
@@ -80,29 +85,68 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func loadGuide() async {
+    func loadGuide(offset: Int? = nil) async {
         guard isAuthenticated else { return }
+        let target = min(max(offset ?? requestedGuideOffset, -168), 168)
+        requestedGuideOffset = target
+        guideLoadGeneration += 1
+        let generation = guideLoadGeneration
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer {
+            if generation == guideLoadGeneration {
+                isLoading = false
+                requestedGuideOffset = guideOffset
+            }
+        }
         do {
-            let guide = try await client.guide(server: server)
+            let guide = try await client.guide(server: server, offset: target)
+            guard generation == guideLoadGeneration, !Task.isCancelled else { return }
             channels = guide.rows
             guideCategories = guide.categories
+            guideOffset = target
             guideWindowStart = Date(
                 timeIntervalSince1970: guide.windowStartTimestamp
-                    ?? floor(Date().timeIntervalSince1970 / 3600) * 3600
+                    ?? floor(Date().timeIntervalSince1970 / 3600) * 3600 + Double(target) * 3600
             )
-            if selection == nil, let firstChannel = channels.first {
+            if target == 0, selection == nil, let firstChannel = channels.first {
                 play(firstChannel)
             }
             if channels.isEmpty {
                 errorMessage = "No channels are selected. Choose guide categories in the neTV web settings."
             }
         } catch APIError.authenticationFailed {
+            guard generation == guideLoadGeneration else { return }
             isAuthenticated = false
         } catch {
+            guard generation == guideLoadGeneration, !Task.isCancelled else { return }
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func canPlayProgram(_ program: Program, in row: ChannelRow) -> Bool {
+        !program.unavailable && (program.isCurrent
+            || (program.catchup && row.channel.canCatchUp(from: program.startTimestamp)))
+    }
+
+    func isPlayingProgram(_ program: Program, in row: ChannelRow) -> Bool {
+        guard let selection, selection.channel.id == row.id else { return false }
+        if selection.isCatchup {
+            guard let start = selection.program?.startTimestamp else { return false }
+            return start == program.startTimestamp
+        }
+        return program.isCurrent
+    }
+
+    func playProgram(_ program: Program, in row: ChannelRow) {
+        guard canPlayProgram(program, in: row) else {
+            errorMessage = "This program is not available to play."
+            return
+        }
+        if program.isCurrent {
+            play(row)
+        } else {
+            playCatchup(row.channel, program: program)
         }
     }
 
@@ -118,15 +162,44 @@ final class AppModel: ObservableObject {
     /// Restarts what the selected live channel is airing, when its archive allows.
     var startOverForSelection: (() -> Void)? {
         guard let selection, !selection.isCatchup,
-              let row = channels.first(where: { $0.id == selection.channel.id }),
-              let program = startOverProgram(for: row) else { return nil }
-        return { [weak self] in self?.playCatchup(row.channel, program: program) }
+              let program = channels.first(where: { $0.id == selection.channel.id })?.currentProgram
+                ?? selection.program,
+              program.isCurrent, selection.channel.canCatchUp(from: program.startTimestamp) else { return nil }
+        return { [weak self] in self?.playCatchup(selection.channel, program: program) }
     }
 
     /// Plays an archived program from its start.
     func playCatchup(_ channel: Channel, program: Program) {
         guard let start = program.startTimestamp else { return }
         selection = PlayerSelection(channel: channel, program: program, catchupStart: start)
+    }
+
+    func seekCatchup(
+        _ playing: PlayerSelection, to timestamp: Double, resume: Bool,
+        now: Double = Date().timeIntervalSince1970
+    ) throws {
+        guard selection?.id == playing.id else { return }
+        guard playing.isCatchup, timestamp.isFinite, playing.channel.catchupDays > 0 else {
+            throw APIError.server("This stream does not support archive seeking.")
+        }
+        if timestamp >= now - 30 {
+            play(playing.channel)
+            selection?.startPaused = !resume
+            return
+        }
+        let oldest = now - Double(playing.channel.catchupDays) * 86_400 + 60
+        let target = floor(max(timestamp, oldest))
+        guard let end = playing.program?.endTimestamp, target < end else {
+            throw APIError.server("This program is no longer available in the upstream archive.")
+        }
+        selection = PlayerSelection(
+            channel: playing.channel, program: playing.program,
+            catchupStart: target, startPaused: !resume
+        )
+    }
+
+    func keepArchiveAlive(sessionID: String) async throws {
+        try await client.keepArchiveAlive(server: server, sessionID: sessionID)
     }
 
     /// The program airing now, when the archive lets it restart from the beginning.

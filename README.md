@@ -41,7 +41,7 @@ through their IPTV providers.
 ## Features
 
 - **Live TV** with EPG grid guide
-- **Catchup** - When an Xtream source keeps an archive (`tv_archive`), choose an earlier program in the guide to watch it from the start, or use **Start over** on the program airing now. It works in the web player and in the Mac, Apple TV and iPhone apps; in the apps, open a channel's context menu to catch up. Guide listings are kept as long as the longest archive.
+- **Catchup** - When an Xtream source keeps an archive (`tv_archive`), choose an earlier program in the guide to watch it from the start, or use **Start over** on the program airing now. It works in the web player and in the Mac, Apple TV and iPhone apps; in the apps, open a stream's context menu to catch up. Guide listings are kept as long as the longest archive. Unavailable past listings are disabled in the web guide. Drag the web player's timeline to scrub backward or forward through an archived program, or use the arrow keys and **Jump**. Seeking beyond the buffered video releases the previous upstream connection before reopening the archive at the selected time and may briefly buffer. Catchup bypasses AI upscaling, retaining source resolution up to the configured resolution limit; live playback keeps its existing upscaling setting.
 - **Mac app** on the [Mac App Store](https://apps.apple.com/us/app/netv-personal-tv-player/id6814189386?mt=12); Apple TV and iPhone apps are coming soon
 - **Native player gateway** - Bring your neTV channels and settings to Apple TV and other Xtream-compatible players
 - **Movies & Series** with metadata, seasons, episodes

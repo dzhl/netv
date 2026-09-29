@@ -15,19 +15,30 @@ struct PlayerView: View {
     @State private var quality: String?
     @State private var airPlayActive = false
     @State private var airPlayHost: String?
+    @State private var archiveStreamStart: Double?
+    @State private var isScrubbing = false
+    @State private var seekError: String?
+    @State private var seekTask: Task<Void, Never>?
+    @State private var isPreparingArchive = false
     #if os(tvOS)
     @State private var tvActivity = Date()
+    @State private var tvSeekPosition: Double?
+    @State private var tvResumeAfterCancel = false
     #endif
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.netv",
         category: "Player"
     )
 
+    private var archiveTimeline: ArchiveTimeline? {
+        ArchiveTimeline(selection: selection, streamStart: archiveStreamStart)
+    }
+
     var body: some View {
         ZStack {
             Color.black
             if let player {
-                PlayerController(player: player)
+                PlayerController(player: player, isCatchup: selection.isCatchup)
             } else if let errorMessage {
                 ContentUnavailableView(
                     "Unable to Play",
@@ -36,6 +47,12 @@ struct PlayerView: View {
                 )
             } else {
                 ProgressView("Tuning \(selection.channel.name)…")
+                    .tint(.white)
+            }
+            if player != nil && isPreparingArchive {
+                ProgressView("Seeking…")
+                    .padding()
+                    .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 12))
                     .tint(.white)
             }
 
@@ -52,6 +69,18 @@ struct PlayerView: View {
                         }
                     }
                     Spacer()
+                    if let player, let timeline = archiveTimeline {
+                        VStack(spacing: 12) {
+                            ArchiveSeekBar(
+                                player: player, timeline: timeline, isScrubbing: $isScrubbing,
+                                seek: seekArchive
+                            )
+                            ArchivePlayPauseButton(player: player)
+                        }
+                        .padding()
+                        .background(.black.opacity(0.7))
+                        .disabled(isPreparingArchive)
+                    }
                     if let startOver = model.startOverForSelection {
                         Button(action: startOver) {
                             Image(systemName: "backward.end.fill")
@@ -100,8 +129,10 @@ struct PlayerView: View {
                 MacControlBar(
                     player: player, volume: $model.playbackVolume, airPlayActive: airPlayActive,
                     isCatchup: selection.isCatchup, startOver: model.startOverForSelection,
-                    goLive: selection.isCatchup ? { model.play(selection.channel) } : nil
+                    goLive: selection.isCatchup ? { model.play(selection.channel) } : nil,
+                    timeline: archiveTimeline, isScrubbing: $isScrubbing, seek: seekArchive
                 )
+                .disabled(isPreparingArchive)
             }
         }
         .overlay(alignment: .top) {
@@ -138,12 +169,17 @@ struct PlayerView: View {
                     player: player,
                     selection: selection,
                     expanded: model.isPlayerExpanded,
-                    lastActivity: tvActivity
+                    lastActivity: tvActivity,
+                    timeline: archiveTimeline, seekPosition: tvSeekPosition
                 )
             }
         }
         .onChange(of: model.playPauseRequest) { _, _ in
-            if player?.timeControlStatus == .paused {
+            guard !isPreparingArchive else { return }
+            if let position = tvSeekPosition {
+                tvSeekPosition = nil
+                seekArchive(position, true)
+            } else if player?.timeControlStatus == .paused {
                 player?.play()
             } else {
                 player?.pause()
@@ -153,15 +189,75 @@ struct PlayerView: View {
         .onChange(of: model.playerActivity) { _, _ in
             tvActivity = Date()
         }
+        .onChange(of: model.seekBackwardRequest) { _, _ in previewTVSeek(by: -10) }
+        .onChange(of: model.seekForwardRequest) { _, _ in previewTVSeek(by: 10) }
         .onChange(of: model.isPlayerExpanded) { _, expanded in
             if expanded { tvActivity = Date() }
+            else {
+                if tvSeekPosition != nil && tvResumeAfterCancel { player?.play() }
+                tvSeekPosition = nil
+            }
         }
         #endif
         .task {
             await runPlayback()
         }
         .onDisappear {
+            seekTask?.cancel()
             player?.pause()
+        }
+        .alert("Unable to Seek", isPresented: Binding(
+            get: { seekError != nil }, set: { if !$0 { seekError = nil } }
+        )) {
+            Button("OK") { seekError = nil }
+        } message: {
+            Text(seekError ?? "")
+        }
+    }
+
+    #if os(tvOS)
+    private func previewTVSeek(by seconds: Double) {
+        guard model.isPlayerExpanded, !isPreparingArchive,
+              let player, let timeline = archiveTimeline else { return }
+        if tvSeekPosition == nil { tvResumeAfterCancel = player.timeControlStatus != .paused }
+        let position = tvSeekPosition ?? timeline.elapsed(mediaTime: player.currentTime().seconds)
+        tvSeekPosition = min(max(position + seconds, 0), timeline.duration)
+        player.pause()
+        tvActivity = Date()
+    }
+    #endif
+
+    @MainActor
+    private func seekArchive(_ elapsed: Double, _ resume: Bool) {
+        guard !isPreparingArchive, let player, let timeline = archiveTimeline, elapsed.isFinite else { return }
+        seekTask?.cancel()
+        let ranges = player.currentItem?.seekableTimeRanges.compactMap { value -> ClosedRange<Double>? in
+            let range = value.timeRangeValue
+            let start = range.start.seconds
+            let end = CMTimeRangeGetEnd(range).seconds
+            return start.isFinite && end.isFinite && end > start ? start...end : nil
+        } ?? []
+        let position = timeline.localPosition(elapsed: elapsed, seekable: ranges)
+        player.pause()
+        seekTask = Task { @MainActor in
+            guard !Task.isCancelled else { return }
+            if let position {
+                let sought = await player.seek(
+                    to: CMTime(seconds: position, preferredTimescale: 600),
+                    toleranceBefore: .zero, toleranceAfter: .zero
+                )
+                guard !Task.isCancelled else { return }
+                if sought {
+                    if resume { player.play() }
+                    return
+                }
+            }
+            do {
+                try model.seekCatchup(selection, to: timeline.timestamp(elapsed: elapsed), resume: resume)
+            } catch {
+                logger.error("Archive seek failed: \(error.localizedDescription, privacy: .public)")
+                seekError = error.localizedDescription
+            }
         }
     }
 
@@ -173,6 +269,7 @@ struct PlayerView: View {
             player = nil
             quality = nil
             airPlayActive = false
+            isPreparingArchive = false
             if let sessionID = activeSessionID {
                 Task { await model.stopPlayback(sessionID: sessionID) }
             }
@@ -208,13 +305,33 @@ struct PlayerView: View {
                 #else
                 currentPlayer.volume = 1
                 #endif
+                isPreparingArchive = selection.isCatchup
                 player = currentPlayer
-                currentPlayer.play()
+                if let requested = selection.catchupStart {
+                    archiveStreamStart = configuration.archiveStart ?? floor(requested / 60) * 60
+                    let offset = configuration.archiveSeek ?? max(0, requested - (archiveStreamStart ?? requested))
+                    try await prepareArchivePosition(
+                        player: currentPlayer, offset: offset, sessionID: activeSessionID
+                    )
+                }
+                isPreparingArchive = false
+                if !selection.startPaused { currentPlayer.play() }
                 var sampler = PlaybackHealthSampler()
                 var shouldRetune = false
                 while !Task.isCancelled {
                     try await Task.sleep(for: .seconds(2))
                     quality = qualityLabel(for: item.presentationSize)
+                    if item.status == .failed {
+                        throw item.error ?? APIError.server("The stream could not be played.")
+                    }
+                    if selection.isCatchup, let sessionID = activeSessionID {
+                        do {
+                            try await model.keepArchiveAlive(sessionID: sessionID)
+                        } catch {
+                            if Task.isCancelled { throw CancellationError() }
+                            logger.warning("Archive heartbeat failed: \(error.localizedDescription, privacy: .public)")
+                        }
+                    }
                     #if os(iOS) || os(macOS)
                     airPlayActive = currentPlayer.isExternalPlaybackActive
                     // The TV fetches segments itself, which keeps the session alive. Swapping
@@ -284,6 +401,35 @@ struct PlayerView: View {
     }
 
     @MainActor
+    private func prepareArchivePosition(player: AVPlayer, offset: Double, sessionID: String?) async throws {
+        let deadline = Date().addingTimeInterval(40)
+        var nextHeartbeat = Date()
+        while Date() < deadline {
+            try Task.checkCancellation()
+            guard let item = player.currentItem, item.status != .failed else {
+                throw APIError.server("The archive could not be loaded.")
+            }
+            if let sessionID, Date() >= nextHeartbeat {
+                try await model.keepArchiveAlive(sessionID: sessionID)
+                nextHeartbeat = Date().addingTimeInterval(2)
+            }
+            if item.status == .readyToPlay && item.seekableTimeRanges.contains(where: {
+                let range = $0.timeRangeValue
+                return range.start.seconds <= offset && CMTimeRangeGetEnd(range).seconds > offset
+            }) {
+                let sought = await player.seek(
+                    to: CMTime(seconds: offset, preferredTimescale: 600),
+                    toleranceBefore: .zero, toleranceAfter: .zero
+                )
+                guard sought else { throw APIError.server("The archive position could not be loaded.") }
+                return
+            }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        throw APIError.server("Timed out waiting for the selected archive position.")
+    }
+
+    @MainActor
     private func prepareQualityPlayer(
         url: URL, options: [String: Any], currentItem: AVPlayerItem
     ) async throws -> AVPlayer {
@@ -331,6 +477,7 @@ struct PlayerView: View {
 #if os(macOS)
 private struct PlayerController: NSViewRepresentable {
     let player: AVPlayer
+    let isCatchup: Bool
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
@@ -356,6 +503,9 @@ private struct MacControlBar: View {
     let isCatchup: Bool
     let startOver: (() -> Void)?
     let goLive: (() -> Void)?
+    let timeline: ArchiveTimeline?
+    @Binding var isScrubbing: Bool
+    let seek: (Double, Bool) -> Void
 
     @State private var isPlaying = true
     @State private var isHovering = false
@@ -363,8 +513,16 @@ private struct MacControlBar: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            let visible = !isPlaying || (isHovering && context.date.timeIntervalSince(lastActivity) < 3)
-            bar
+            let visible = isScrubbing || !isPlaying || (isHovering && context.date.timeIntervalSince(lastActivity) < 3)
+            VStack(spacing: 8) {
+                if let timeline {
+                    ArchiveSeekBar(player: player, timeline: timeline, isScrubbing: $isScrubbing, seek: seek)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 12)
+                        .background(.black.opacity(0.7))
+                }
+                bar
+            }
                 .opacity(visible ? 1 : 0)
                 .animation(.easeInOut(duration: 0.2), value: visible)
         }
@@ -525,10 +683,12 @@ private struct AirPlayButton: UIViewRepresentable {
 
 private struct PlayerController: UIViewControllerRepresentable {
     let player: AVPlayer
+    let isCatchup: Bool
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.player = player
+        controller.showsPlaybackControls = !isCatchup
         controller.allowsPictureInPicturePlayback = true
         controller.canStartPictureInPictureAutomaticallyFromInline = true
         controller.updatesNowPlayingInfoCenter = true
@@ -537,11 +697,13 @@ private struct PlayerController: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         controller.player = player
+        controller.showsPlaybackControls = !isCatchup
     }
 }
 #else
 private struct PlayerController: UIViewControllerRepresentable {
     let player: AVPlayer
+    let isCatchup: Bool
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
@@ -565,13 +727,35 @@ private struct TVControlBar: View {
     let selection: PlayerSelection
     let expanded: Bool
     let lastActivity: Date
+    let timeline: ArchiveTimeline?
+    let seekPosition: Double?
 
     @State private var isPlaying = true
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            let visible = !isPlaying || context.date.timeIntervalSince(lastActivity) < 4
-            bar
+            let visible = seekPosition != nil || !isPlaying || context.date.timeIntervalSince(lastActivity) < 4
+            VStack(spacing: 12) {
+                if let timeline {
+                    let elapsed = seekPosition ?? timeline.elapsed(mediaTime: player.currentTime().seconds)
+                    VStack(spacing: 8) {
+                        ProgressView(value: elapsed, total: timeline.duration)
+                            .tint(.white)
+                        HStack {
+                            Text(archiveTime(elapsed))
+                            Spacer()
+                            Text(seekPosition == nil ? "Left/Right to seek" : "Select or Play to seek")
+                            Spacer()
+                            Text("-" + archiveTime(timeline.duration - elapsed))
+                        }
+                        .font(expanded ? .caption : .caption2)
+                        .monospacedDigit()
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, expanded ? 60 : 16)
+                }
+                bar
+            }
                 .opacity(visible ? 1 : 0)
                 .animation(.easeInOut(duration: 0.3), value: visible)
         }
@@ -623,6 +807,89 @@ private struct TVControlBar: View {
     }
 }
 
+#endif
+
+private func archiveTime(_ seconds: Double) -> String {
+    let value = Int(max(0, seconds.isFinite ? seconds : 0))
+    return value >= 3600
+        ? String(format: "%d:%02d:%02d", value / 3600, value / 60 % 60, value % 60)
+        : String(format: "%d:%02d", value / 60, value % 60)
+}
+
+#if !os(tvOS)
+private struct ArchiveSeekBar: View {
+    let player: AVPlayer
+    let timeline: ArchiveTimeline
+    @Binding var isScrubbing: Bool
+    let seek: (Double, Bool) -> Void
+    @State private var draft = 0.0
+    @State private var resumeAfterSeek = true
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+            let current = timeline.elapsed(mediaTime: player.currentTime().seconds)
+            let displayed = isScrubbing ? draft : current
+            VStack(spacing: 4) {
+                HStack(spacing: 12) {
+                    Button {
+                        seek(current - 10, player.timeControlStatus != .paused)
+                    } label: {
+                        Image(systemName: "gobackward.10")
+                    }
+                    .accessibilityLabel("Back 10 seconds")
+                    Slider(value: Binding(
+                        get: { isScrubbing ? draft : current },
+                        set: { draft = $0 }
+                    ), in: 0...timeline.duration) { editing in
+                        if editing {
+                            draft = current
+                            resumeAfterSeek = player.timeControlStatus != .paused
+                            isScrubbing = true
+                            player.pause()
+                        } else {
+                            isScrubbing = false
+                            seek(draft, resumeAfterSeek)
+                        }
+                    }
+                    .tint(.white)
+                    .accessibilityLabel("Archive playback position")
+                    .accessibilityValue(archiveTime(displayed))
+                    Button {
+                        seek(current + 10, player.timeControlStatus != .paused)
+                    } label: {
+                        Image(systemName: "goforward.10")
+                    }
+                    .accessibilityLabel("Forward 10 seconds")
+                }
+                .buttonStyle(.plain)
+                HStack {
+                    Text(archiveTime(displayed))
+                    Spacer()
+                    Text("-" + archiveTime(timeline.duration - displayed))
+                }
+                .font(.caption.monospacedDigit())
+            }
+            .foregroundStyle(.white)
+        }
+    }
+}
+
+private struct ArchivePlayPauseButton: View {
+    let player: AVPlayer
+    @State private var paused = false
+
+    var body: some View {
+        Button {
+            paused ? player.play() : player.pause()
+        } label: {
+            Image(systemName: paused ? "play.fill" : "pause.fill")
+                .frame(width: 44, height: 36)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(paused ? "Play" : "Pause")
+        .onReceive(player.publisher(for: \.timeControlStatus)) { paused = $0 == .paused }
+    }
+}
 #endif
 
 private func isLoopback(_ host: String) -> Bool {

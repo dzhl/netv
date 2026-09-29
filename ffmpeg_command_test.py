@@ -1317,6 +1317,28 @@ def test_bandwidth_saver_bypasses_ai_and_scales_down(hw: HwAccel):
     assert cmd[cmd.index("-c:v") + 1] != "copy"
 
 
+@pytest.mark.parametrize("height", [720, 1080, 2160])
+def test_archive_policy_copies_compatible_source_without_ai_upscaling(height):
+    media_info = MediaInfo(
+        video_codec="h264", audio_codec="aac", pix_fmt="yuv420p",
+        audio_channels=2, audio_sample_rate=48000, audio_profile="LC", height=height,
+    )
+    with (
+        patch("ffmpeg_command._load_settings", return_value={"sr_model": "upscale-model"}),
+        patch("ffmpeg_command._sr_engine_dir", "/models"),
+        patch("ffmpeg_command._build_sr_filter") as sr_filter,
+    ):
+        cmd = build_hls_ffmpeg_cmd(
+            "https://upstream.test/timeshift/user/pass/60/2026-09-28:10-00/1.ts",
+            "nvenc+software", "/tmp/hls", is_vod=True,
+            media_info=media_info, max_resolution="4k", allow_upscale=False,
+        )
+    sr_filter.assert_not_called()
+    assert cmd[cmd.index("-c:v") + 1] == "copy"
+    assert cmd[cmd.index("-c:a") + 1] == "copy"
+    assert "-vf" not in cmd
+
+
 @pytest.mark.skipif(not __import__("shutil").which("ffmpeg"), reason="ffmpeg not installed")
 def test_probe_audio_reads_local_surround_segment(tmp_path):
     """probe_audio reports the layout that decides 5.1 handling."""

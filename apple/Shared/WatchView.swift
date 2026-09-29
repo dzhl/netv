@@ -74,7 +74,12 @@ struct WatchView: View {
                         .focusable(model.isPlayerExpanded)
                         .focused($isPlayerFocused)
                         .onTapGesture { model.playPauseRequest = UUID() }
-                        .onMoveCommand { _ in model.playerActivity = UUID() }
+                        .onMoveCommand { direction in
+                            model.playerActivity = UUID()
+                            guard model.selection?.isCatchup == true else { return }
+                            if direction == .left { model.seekBackwardRequest = UUID() }
+                            if direction == .right { model.seekForwardRequest = UUID() }
+                        }
                     #endif
                     #if os(macOS)
                     expandButton
@@ -109,10 +114,11 @@ struct WatchView: View {
         guard let selection = model.selection else { return nil }
         // Archived playback keeps the program it was started for.
         guard !selection.isCatchup,
-              let row = model.channels.first(where: { $0.id == selection.channel.id }) else {
+              let row = model.channels.first(where: { $0.id == selection.channel.id }),
+              let program = row.currentProgram else {
             return selection
         }
-        return PlayerSelection(channel: row.channel, program: row.currentProgram)
+        return PlayerSelection(channel: row.channel, program: program)
     }
     #endif
 

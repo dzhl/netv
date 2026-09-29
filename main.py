@@ -1009,6 +1009,7 @@ def _build_guide_rows(
                     "left_pct": left_pct,
                     "width_pct": width_pct,
                     "catchup": can_catch_up,
+                    "unavailable": p.stop <= now and not can_catch_up,
                 }
             )
             # Mobile: 2-hour window
@@ -1028,6 +1029,7 @@ def _build_guide_rows(
                         "start_timestamp": p.start.timestamp(),
                         "end_timestamp": p.stop.timestamp(),
                         "catchup": can_catch_up,
+                        "unavailable": p.stop <= now and not can_catch_up,
                     }
                 )
 
@@ -1508,7 +1510,8 @@ class PlayerInfo:
     source_id: str = ""  # Source ID for stream limit tracking
     category_ids: list[str] | None = None  # Category IDs for live streams (access check)
     catchup_days: int = 0  # Days of upstream archive for live streams (0 = none)
-    catchup_start: float = 0.0  # Unix start of the archived program being played
+    catchup_start: float = 0.0  # Unix time the archived stream starts at
+    catchup_seek: float = 0.0  # Seconds into the archived stream to start playing
 
 
 def _get_episode_desc(ep: dict) -> str:
@@ -1628,15 +1631,18 @@ def _get_catchup_player_info(stream_id: str, start_ts: float) -> PlayerInfo:
 
     program = _find_archived_program(stream, start)
     stop = program.stop if program else start + timedelta(hours=1)
+    # Archives start on whole minutes; the player skips the remaining seconds
+    begin = start.replace(second=0, microsecond=0)
     source_id = stream.get("source_id", "")
     client = get_xtream_client_by_source(source_id)
     tz = catchup.server_timezone(source_id, client.get_server_info) if client else UTC
-    info.url = catchup.timeshift_url(stream, start, catchup.duration_minutes(start, stop), tz)
+    info.url = catchup.timeshift_url(stream, begin, catchup.duration_minutes(begin, stop), tz)
     info.is_m3u = False
-    info.catchup_start = start.timestamp()
+    info.catchup_start = begin.timestamp()
+    info.catchup_seek = (start - begin).total_seconds()
     info.program_title = program.title if program else ""
     info.program_desc = program.desc if program else ""
-    info.program_start = start.timestamp()
+    info.program_start = program.start.timestamp() if program else begin.timestamp()
     info.program_end = stop.timestamp()
     return info
 
@@ -1874,6 +1880,7 @@ async def player_page(
             "content_access": _get_content_access(username),
             "catchup_days": info.catchup_days,
             "catchup_start": info.catchup_start,
+            "catchup_seek": info.catchup_seek,
         },
     )
 
@@ -2317,10 +2324,10 @@ async def transcode_stop(
     """Stop a transcode session (VOD sessions stay cached)."""
     if casting.manager.owns_session(session_id):
         return {"status": "casting"}
-    if force:
-        session = ffmpeg_session.get_session(session_id)
-        if session and session.get("username") != _user.get("sub", ""):
-            raise HTTPException(404, "Session not found")
+    session = ffmpeg_session.get_session(session_id)
+    force = force or bool(session and session.get("is_archive"))
+    if force and session and session.get("username") != _user.get("sub", ""):
+        raise HTTPException(404, "Session not found")
     ffmpeg_session.stop_session(session_id, force=force)
     return {"status": "stopped"}
 

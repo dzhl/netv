@@ -13,6 +13,7 @@ const assertPercent = (actual, expected) =>
 function element() {
   const listeners = new Map();
   const classes = new Set(['hidden']);
+  const attributes = new Map();
   return {
     style: {}, disabled: false, value: '', textContent: '',
     classList: {
@@ -35,7 +36,9 @@ function element() {
     async emit(name, value = {}) {
       for (const handler of listeners.get(name) || []) await handler(value);
     },
-    setAttribute() {}, removeAttribute() {}, appendChild() {}, replaceChildren() {},
+    setAttribute: (name, value) => attributes.set(name, String(value)),
+    getAttribute: name => attributes.get(name),
+    removeAttribute() {}, appendChild() {}, replaceChildren() {},
     showModal() { this.open = true; }, close() { this.open = false; },
     getBoundingClientRect: () => ({ left: 0, width: 100, top: 0, height: 4 }),
   };
@@ -46,7 +49,11 @@ async function player({
   programStart = 0, programEnd = 0, nextProgram = null,
   castFailure = false, initialCast = null, seekOffset = 0, statusReady = null,
   airplay = false,
+  catchup = false, catchupDays = catchup ? 2 : 0, catchupStart = programStart, catchupSeek = 0,
+  transcodedDuration = 0,
+  stopReady = null, stopFailure = false, startReady = null,
 } = {}) {
+  isVod = isVod || catchup;
   const elements = new Map();
   const getElementById = id => {
     if (!elements.has(id)) elements.set(id, element());
@@ -128,6 +135,7 @@ async function player({
       transcodeMode: direct ? 'never' : 'always',
       liveDvrMins: isVod ? 0 : 60,
       streamId: '1', programStart, programEnd,
+      catchup, catchupDays, catchupStart, catchupSeek,
       ccStyle: {}, captionsEnabled: false, sourceId: 'provider', isHttps: false,
     },
     location: { href: 'http://netv.test/play/live/1', origin: 'http://netv.test', hostname: 'netv.test' },
@@ -149,6 +157,7 @@ async function player({
       calls.push({ url, options });
       let data = { active: false };
       if (url.startsWith('/transcode/start?')) {
+        if (startReady) await startReady;
         const id = `session${++sessionNumber}`;
         data = {
           session_id: id, duration: isVod ? 3600 : 0, subtitles: [],
@@ -156,6 +165,11 @@ async function player({
           playlist: `/transcode/${id}/${isVod ? 'stream' : 'low'}.m3u8`,
           ...(!isVod ? { master_playlist: `/transcode/${id}/master.m3u8` } : {}),
         };
+      } else if (options.method === 'DELETE') {
+        if (stopReady) await stopReady;
+        if (stopFailure) return { ok: false, status: 503 };
+      } else if (url.startsWith('/transcode/progress/')) {
+        data = { duration: transcodedDuration };
       } else if (url.endsWith('/health')) {
         data = { playlist: `/transcode/session${sessionNumber}/${rendition}.m3u8` };
       } else if (url.startsWith('/api/live/program/')) {
@@ -184,9 +198,10 @@ async function player({
   }
   await flush();
   return {
-    video, window, elements, engines, calls, beacons, errors, timers, pickerCalls,
+    video, window, document, elements, engines, calls, beacons, errors, timers, pickerCalls,
     setRendition: value => { rendition = value; },
     setWindowStart: value => { windowStart = value; },
+    setTranscodedDuration: value => { transcodedDuration = value; },
     setLiveEdge: value => { for (const engine of engines) engine.liveSyncPosition = value; },
     async tickProgram() {
       const [, timer] = [...timers].find(([, timer]) => timer.ms === 1000);
@@ -462,6 +477,172 @@ test('clicking before the DVR window clamps to the oldest retained position', as
 test('live controls stay hidden when the guide has no program', async () => {
   const p = await player();
   assert.equal(p.elements.get('progress-container').classList.contains('hidden'), true);
+  assert.deepEqual(p.errors, []);
+});
+
+test('archive scrubbing previews the full program and reopens only on release', async () => {
+  const start = Math.floor(Date.now() / 1000) - 7200;
+  const p = await player({ catchup: true, programStart: start, programEnd: start + 3600 });
+  const slider = p.elements.get('progress-seek');
+  const originalUrl = p.window.location.href;
+  slider.value = '25';
+  await slider.emit('input');
+  slider.value = '75';
+  await slider.emit('input');
+  await p.video.emit('timeupdate');
+  assert.equal(p.window.location.href, originalUrl);
+  assert.equal(p.video.currentTime, 0);
+  assert.equal(p.elements.get('time-current').textContent, '45:00');
+  assert.equal(slider.getAttribute('aria-valuetext'), '45:00');
+  assertPercent(p.elements.get('progress-played').style.width, 75);
+  await slider.emit('change');
+  assert.equal(p.window.location.href, `/play/live/1?start=${start + 2700}`);
+  assert.equal(p.calls.some(call => call.url.startsWith('/transcode/seek/')), false);
+  assert.deepEqual(p.errors, []);
+});
+
+test('archive scrubbing backward before the opened archive requests that earlier moment', async () => {
+  const start = Math.floor(Date.now() / 1000) - 7200;
+  const p = await player({
+    catchup: true, programStart: start, programEnd: start + 3600,
+    catchupStart: start + 1800, transcodedDuration: 300,
+  });
+  const slider = p.elements.get('progress-seek');
+  slider.value = '10';
+  await slider.emit('input');
+  await slider.emit('change');
+  assert.equal(p.window.location.href, `/play/live/1?start=${start + 360}`);
+  assert.equal(p.calls.some(call => call.url.startsWith('/transcode/seek/')), false);
+});
+
+test('archive scrubbing within transcoded video seeks locally in either direction', async () => {
+  const start = Math.floor(Date.now() / 1000) - 7200;
+  const p = await player({
+    catchup: true, programStart: start, programEnd: start + 3600,
+    catchupStart: start + 600, transcodedDuration: 1200,
+  });
+  const originalUrl = p.window.location.href;
+  const slider = p.elements.get('progress-seek');
+  for (const [percent, position] of [[40, 840], [20, 120]]) {
+    slider.value = String(percent);
+    await slider.emit('input');
+    await slider.emit('change');
+    assert.equal(p.video.currentTime, position);
+    assert.equal(p.window.location.href, originalUrl);
+  }
+  assert.deepEqual(p.errors, []);
+});
+
+test('archive jump times remain relative to the full program after seeking', async () => {
+  const start = Math.floor(Date.now() / 1000) - 7200;
+  for (const [text, seconds] of [['10:00', 600], ['1:30:00', 5400]]) {
+    const p = await player({
+      catchup: true, programStart: start, programEnd: start + 7200,
+      catchupStart: start + 1800, transcodedDuration: 120,
+    });
+    const input = p.elements.get('seek-input');
+    input.value = text;
+    await input.emit('keydown', { key: 'Enter', preventDefault() {} });
+    assert.equal(p.window.location.href, `/play/live/1?start=${start + seconds}`);
+    assert.equal(input.classList.contains('ring-red-500'), false);
+  }
+});
+
+test('archive seek waits for a forced stop before navigating', async () => {
+  let release;
+  const stopReady = new Promise(resolve => { release = resolve; });
+  const start = Math.floor(Date.now() / 1000) - 7200;
+  const p = await player({ catchup: true, programStart: start, programEnd: start + 3600, stopReady });
+  const originalUrl = p.window.location.href;
+  const seek = p.elements.get('progress-bar').emit('click', { clientX: 50 });
+  await flush();
+  assert.equal(p.window.location.href, originalUrl);
+  assert.ok(p.calls.some(call => call.options.method === 'DELETE' &&
+    call.url === '/transcode/session1?force=true'));
+  release();
+  await seek;
+  assert.equal(p.window.location.href, `/play/live/1?start=${start + 1800}`);
+  assert.deepEqual(p.errors, []);
+});
+
+test('archive seek during startup releases the eventual session before navigating', async () => {
+  let finishStartup;
+  const startReady = new Promise(resolve => { finishStartup = resolve; });
+  const start = Math.floor(Date.now() / 1000) - 7200;
+  const p = await player({ catchup: true, programStart: start, programEnd: start + 3600, startReady });
+  const originalUrl = p.window.location.href;
+  const seek = p.elements.get('progress-bar').emit('click', { clientX: 50 });
+  await flush();
+  assert.equal(p.window.location.href, originalUrl);
+  finishStartup();
+  await seek;
+  assert.equal(p.window.location.href, `/play/live/1?start=${start + 1800}`);
+  assert.ok(p.calls.some(call => call.url === '/transcode/session1?force=true'));
+});
+
+test('failed archive stop blocks navigation and exposes a playback error', async () => {
+  const start = Math.floor(Date.now() / 1000) - 7200;
+  const p = await player({
+    catchup: true, programStart: start, programEnd: start + 3600, stopFailure: true,
+  });
+  const originalUrl = p.window.location.href;
+  await p.elements.get('progress-bar').emit('click', { clientX: 50 });
+  assert.equal(p.window.location.href, originalUrl);
+  assert.equal(p.elements.get('error').classList.contains('hidden'), false);
+  assert.match(String(p.errors[0]), /Could not release the previous stream/);
+});
+
+test('closing archive playback force-releases its upstream slot', async () => {
+  const p = await player({ catchup: true });
+  await p.window.emit('pagehide');
+  assert.deepEqual(p.beacons, ['/transcode/session1/stop?force=true']);
+});
+
+test('go live releases archive playback before navigating', async () => {
+  const p = await player({ catchup: true });
+  await p.elements.get('go-live-btn').emit('click', { preventDefault() {} });
+  await flush();
+  assert.ok(p.calls.some(call => call.url === '/transcode/session1?force=true'));
+  assert.equal(p.window.location.href, '/play/live/1');
+});
+
+test('user archive seek cancels a pending sub-minute startup skip', async () => {
+  const start = Math.floor(Date.now() / 1000) - 7200;
+  const p = await player({
+    catchup: true, programStart: start, programEnd: start + 3600,
+    catchupSeek: 25, transcodedDuration: 10,
+  });
+  await p.elements.get('progress-bar').emit('click', { clientX: 0 });
+  p.setTranscodedDuration(120);
+  await p.pollHealth();
+  assert.equal(p.video.currentTime, 0);
+  assert.deepEqual(p.errors, []);
+});
+
+test('cancelling a scrub restores the displayed position without seeking', async () => {
+  const p = await player({ isVod: true });
+  p.video.currentTime = 120;
+  const slider = p.elements.get('progress-seek');
+  slider.value = '75';
+  await slider.emit('input');
+  await slider.emit('pointercancel');
+  assert.equal(p.video.currentTime, 120);
+  assert.equal(p.elements.get('time-current').textContent, '2:00');
+  assert.equal(p.calls.some(call => call.url.startsWith('/transcode/seek/')), false);
+});
+
+test('scrubbing regular VOD preserves local and server-side seeking', async () => {
+  const p = await player({ isVod: true, transcodedDuration: 1200 });
+  const slider = p.elements.get('progress-seek');
+  slider.value = '25';
+  await slider.emit('input');
+  await slider.emit('change');
+  assert.equal(p.video.currentTime, 900);
+  assert.equal(p.calls.some(call => call.url.startsWith('/transcode/seek/')), false);
+  slider.value = '75';
+  await slider.emit('input');
+  await slider.emit('change');
+  assert.ok(p.calls.some(call => call.url === '/transcode/seek/session1?time=2700'));
   assert.deepEqual(p.errors, []);
 });
 

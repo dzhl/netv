@@ -23,7 +23,7 @@ once to play it in the preview, then select the same channel again to fill the
 display. Back/Menu returns to the guide and focuses the playing channel, so
 pressing Select again returns to fullscreen without restarting playback. Video
 retains its original aspect ratio. In fullscreen, the remote's Play/Pause button
-or a click on the touchpad pauses and resumes; swiping just shows the bar. A slim
+or a click on the touchpad pauses and resumes; swiping during live playback just shows the bar. A slim
 status bar (play/pause, LIVE, channel and program) appears for a few seconds on
 remote activity and stays visible while paused.
 
@@ -40,6 +40,34 @@ for category metadata and device-local program times; older servers remain
 playable through All Channels. The Apple client loads every guide page rather
 than stopping at the first 500 channels. Use the refresh button to reload
 channels and the three-hour schedule.
+
+## Catchup and archive seeking
+
+Use the guide's **Earlier**, **Now**, and **Later** buttons on every Apple platform
+to browse three-hour windows, up to seven days in either direction. The date and
+times use your device's time zone. Browsing does not interrupt playback.
+Select an available past program directly to play its upstream archive; unavailable
+past programs and upcoming programs are dimmed and cannot be selected. Selecting
+the stream name still opens live playback. **Now** returns the guide to the current
+window without changing what is playing.
+
+On Apple TV, focus a program and press Select to play it; select the playing program
+again to expand it. The context menu remains available for **Start Over** and
+**Catch Up…**, but is no longer required to browse earlier programs.
+On iPhone, iPad, and Mac, drag the archive timeline
+to preview a position and release to seek, or use the ten-second skip buttons.
+The timeline covers the full program, including portions not yet buffered.
+Seeking preserves whether playback was paused.
+
+On Apple TV, expand archive playback and press Left/Right to preview a position
+in ten-second steps. Press Select or Play/Pause to commit the seek and play.
+No new upstream request is made while previewing.
+
+Positions already available in the current HLS recording seek locally. Other
+positions reopen the upstream archive at the selected time, waiting for the old
+session to stop first. The player accounts for the archive's minute-aligned start
+and keeps the session alive while paused. Catchup uses source resolution (up to
+the server's configured limit), without AI upscaling; live playback is unchanged.
 
 ## AirPlay
 
@@ -193,4 +221,12 @@ The guide decoding and timeline checks run separately:
 ```sh
 xcrun swiftc -parse-as-library Shared/Models.swift Tests/GuideDataChecks.swift -o /tmp/netv-guide-checks
 /tmp/netv-guide-checks
+```
+
+Archive metadata, heartbeat, and forced-release requests use the real API client
+with an in-memory HTTP transport:
+
+```sh
+xcrun swiftc -parse-as-library Shared/Models.swift Shared/APIClient.swift Tests/ArchiveAPIChecks.swift -o /tmp/netv-archive-api-checks
+/tmp/netv-archive-api-checks
 ```

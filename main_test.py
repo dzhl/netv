@@ -372,6 +372,29 @@ def test_catchup_player_info_builds_timeshift_url():
     assert info.program_end == program.stop.timestamp()
 
 
+def test_catchup_player_info_starts_mid_program():
+    from epg import Program
+
+    import main
+
+    program_start = (datetime.now(UTC) - timedelta(hours=3)).replace(second=0, microsecond=0)
+    program = Program("ch1", "Earlier news", program_start, program_start + timedelta(minutes=30))
+    target = program_start + timedelta(minutes=10, seconds=25)
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": [_archive_stream()]}),
+        patch("main.get_xtream_client_by_source", return_value=None),
+        patch("epg.get_programs_in_range", return_value=[program]),
+    ):
+        info = main._get_catchup_player_info("src1_42", target.timestamp())
+    begin = program_start + timedelta(minutes=10)
+    assert f"/20/{begin:%Y-%m-%d:%H-%M}/42.ts" in info.url
+    assert info.catchup_start == begin.timestamp()
+    assert info.catchup_seek == 25
+    assert info.program_start == program_start.timestamp()
+    assert info.program_end == program.stop.timestamp()
+
+
 def test_catchup_player_info_rejects_programs_outside_archive():
     from fastapi import HTTPException
 
@@ -396,12 +419,15 @@ def test_catchup_player_page_plays_archive_as_vod(auth_client):
         channel_name="Channel",
         catchup_days=2,
         catchup_start=1767261600.0,
+        catchup_seek=25.0,
     )
     with patch("main._get_catchup_player_info", return_value=info) as get_info:
         response = auth_client.get("/play/live/src1_42?start=1767261600")
     get_info.assert_called_once_with("src1_42", 1767261600.0)
     assert response.status_code == 200
     assert "catchup: true" in response.text
+    assert "catchupStart: 1767261600.0" in response.text
+    assert "catchupSeek: 25.0" in response.text
     assert 'id="go-live-btn"' in response.text
     assert 'id="jump-btn"' in response.text
     assert 'id="start-over-btn"' not in response.text
@@ -529,6 +555,20 @@ def test_live_page_close_force_stop_checks_owner(auth_client, owner, status):
     assert response.status_code == status
     if status == 200:
         stop.assert_called_once_with("live", force=True)
+    else:
+        stop.assert_not_called()
+
+
+@pytest.mark.parametrize("owner,status", [("testuser", 200), ("other", 404)])
+def test_archive_stop_without_force_still_releases_only_owner_session(auth_client, owner, status):
+    with (
+        patch("ffmpeg_session.get_session", return_value={"username": owner, "is_archive": True}),
+        patch("ffmpeg_session.stop_session") as stop,
+    ):
+        response = auth_client.post("/transcode/archive/stop")
+    assert response.status_code == status
+    if status == 200:
+        stop.assert_called_once_with("archive", force=True)
     else:
         stop.assert_not_called()
 
@@ -876,12 +916,65 @@ class TestGuide:
 
         assert rows[0]["channel"]["catchup_days"] == 1
         assert [p["catchup"] for p in rows[0]["programs"]] == [True, False]
+        assert [p["unavailable"] for p in rows[0]["programs"]] == [False, False]
         assert rows[1]["channel"]["catchup_days"] == 0
         assert [p["catchup"] for p in rows[1]["programs"]] == [False]
+        assert rows[1]["programs"][0]["unavailable"] is True
+        assert rows[1]["programs_mobile"][0]["unavailable"] is True
         mobile = {p["title"]: p for p in rows[0]["programs_mobile"]}
         assert mobile["Earlier"]["catchup"] is True
         assert mobile["Earlier"]["start_timestamp"] == past.start.timestamp()
         assert mobile["Earlier"]["end_timestamp"] == past.stop.timestamp()
+
+    @pytest.mark.parametrize("archive_days", [0, 1, 3])
+    def test_guide_disables_unavailable_past_listings(self, auth_client, archive_days):
+        from html.parser import HTMLParser
+
+        from epg import Program
+
+        class ProgramLinks(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.links = []
+
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if tag == "a" and "data-start" in attrs:
+                    self.links.append(attrs)
+
+        now = datetime.now(UTC)
+        start = now - timedelta(days=2)
+        cache_module.get_cache()["live_categories"] = [{"category_id": "1", "category_name": "Group"}]
+        cache_module.get_cache()["live_streams"] = [{
+            "stream_id": 1, "name": "Stream", "category_ids": ["1"], "epg_channel_id": "guide",
+            "source_type": "xtream", "tv_archive": 1, "tv_archive_duration": archive_days,
+        }]
+        program = Program("guide", "Earlier program", start, start + timedelta(hours=1))
+        with (
+            patch("main.epg.has_programs", return_value=True),
+            patch("main.epg.get_icons_batch", return_value={}),
+            patch("main.epg.get_programs_batch", return_value={"guide": [program]}),
+        ):
+            response = auth_client.get("/guide?cats=1&offset=-48")
+            rows = auth_client.get("/api/guide/rows?cats=1&offset=-48").json()["rows"]
+        assert response.status_code == 200
+        parser = ProgramLinks()
+        parser.feed(response.text)
+        assert len(parser.links) == 2
+        for link in parser.links:
+            if archive_days == 3:
+                assert link["href"] == f"/play/live/1?start={int(start.timestamp())}"
+                assert link["data-nav"] == "epg"
+                assert "aria-disabled" not in link
+            else:
+                assert "href" not in link
+                assert "data-nav" not in link
+                assert "focusable" not in link["class"]
+                assert link["aria-disabled"] == "true"
+                assert link["tabindex"] == "-1"
+                assert "Not available in the upstream archive" in link["title"]
+        for programs in ("programs", "programs_mobile"):
+            assert rows[0][programs][0]["unavailable"] is (archive_days != 3)
 
     def test_guide_page_exposes_timestamps_for_local_times(self, auth_client):
         from epg import Program
