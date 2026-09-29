@@ -118,16 +118,12 @@ def test_resolve_prefers_epg_over_reused_id():
         {"stream_id": 2, "name": "ESPN East", "source_id": "a", "epg_channel_id": "espn.us"},
     ]
     entry = {"stream_id": "1", "name": "ESPN", "source_id": "a", "epg_channel_id": "espn.us"}
-    assert playlists.resolve_channel(entry, streams)["stream_id"] == 2
+    stream = playlists.resolve_channel(entry, streams)
+    assert stream is not None and stream["stream_id"] == 2
 
 
 def test_index_rebuilds_for_new_stream_list():
     entry = {"stream_id": "1", "name": "A", "source_id": "s"}
-    assert (
-        playlists.resolve_channel(entry, [{"stream_id": 1, "name": "A", "source_id": "s"}])["name"]
-        == "A"
-    )
-    assert (
-        playlists.resolve_channel(entry, [{"stream_id": 1, "name": "B", "source_id": "s"}])["name"]
-        == "B"
-    )
+    for name in ("A", "B"):
+        stream = playlists.resolve_channel(entry, [{"stream_id": 1, "name": name, "source_id": "s"}])
+        assert stream is not None and stream["name"] == name
