@@ -33,6 +33,8 @@
   let transcodePlaylist = null;
   let programStart = cfg.programStart || 0;
   let programEnd = cfg.programEnd || 0;
+  // Seconds into the archived stream still to skip once they're transcoded
+  let pendingCatchupSeek = cfg.catchup ? cfg.catchupSeek || 0 : 0;
   let programRefreshInFlight = false;
   let programRetryAt = 0;
   let castController = null;
@@ -480,14 +482,78 @@
     return now - Math.max(0, edge - video.currentTime);
   }
 
-  // Seek to a moment of the broadcast, clamped to what the DVR still holds.
+  // Seek to a moment of the broadcast. Moments older than the DVR holds
+  // come from the upstream archive when the channel keeps one.
   function seekToWallClock(target) {
     const edge = liveEdge();
-    if (edge === null) return;
     const start = liveWindowStart();
+    const now = Date.now() / 1000;
+    const oldestHeld = edge === null || start === null ? now : now - (edge - start);
+    if (cfg.catchupDays > 0 && target < oldestHeld - 5 && target >= archiveStart()) {
+      openArchiveAt(target);
+      return;
+    }
+    if (edge === null) return;
     const oldest = start === null ? 0 : start + 0.1;
     const position = edge - (Date.now() / 1000 - target);
     video.currentTime = Math.min(Math.max(position, oldest), edge);
+  }
+
+  // ============================================================
+  // Catchup (upstream archive)
+  // ============================================================
+
+  // Oldest moment the upstream archive still holds, with a minute of margin.
+  function archiveStart() {
+    return Date.now() / 1000 - cfg.catchupDays * 86400 + 60;
+  }
+
+  // Reopen the channel at a moment of the broadcast: the upstream serves
+  // an archive from any minute, which is how catchup seeks outside what's
+  // already transcoded (archives can't be byte-seeked).
+  function openArchiveAt(target) {
+    const base = '/play/live/' + encodeURIComponent(cfg.streamId);
+    if (target >= Date.now() / 1000 - 30) {
+      window.location.href = base;
+      return;
+    }
+    window.location.href = base + '?start=' + Math.floor(Math.max(target, archiveStart()));
+  }
+
+  function hasCatchupProgram() {
+    return cfg.catchup && programEnd > programStart;
+  }
+
+  // Broadcast time of the frame on screen.
+  function catchupClock() {
+    return cfg.catchupStart + seekOffset + (video.currentTime || 0);
+  }
+
+  function seekCatchup(target) {
+    const loadedEnd = cfg.catchupStart + seekOffset + Math.max(0, transcodedDuration - 2);
+    if (target >= cfg.catchupStart + seekOffset && target <= loadedEnd) {
+      video.currentTime = target - cfg.catchupStart - seekOffset;
+      return;
+    }
+    openArchiveAt(target);
+  }
+
+  function skip(seconds) {
+    if (hasLiveProgram()) seekToWallClock(playbackWallClock() + seconds);
+    else if (hasCatchupProgram()) seekCatchup(catchupClock() + seconds);
+    else video.currentTime += seconds;
+  }
+
+  function applyPendingCatchupSeek() {
+    if (pendingCatchupSeek <= 0 || transcodedDuration < pendingCatchupSeek + 2) return;
+    video.currentTime = pendingCatchupSeek - seekOffset;
+    pendingCatchupSeek = 0;
+  }
+
+  function setupCatchup() {
+    if (!cfg.catchup) return;
+    // Carry on with whatever aired next, or rejoin live once caught up.
+    video.addEventListener('ended', () => openArchiveAt(Math.max(programEnd, catchupClock())));
   }
 
   // The guide only supplies the program that was on at page load, so
@@ -572,7 +638,25 @@
     buffered.style.width = ((live - oldest) / length) * 100 + '%';
   }
 
+  // Shade the part of an archived program that's transcoded and seekable.
+  function renderArchiveWindow(length) {
+    const buffered = document.getElementById('progress-buffered');
+    if (!buffered) return;
+    const clamp = (t) => Math.min(Math.max(t - programStart, 0), length);
+    const from = clamp(cfg.catchupStart + seekOffset);
+    const to = clamp(cfg.catchupStart + seekOffset + transcodedDuration);
+    buffered.style.left = (from / length) * 100 + '%';
+    buffered.style.width = ((to - from) / length) * 100 + '%';
+  }
+
   function updateProgress() {
+    if (hasCatchupProgram()) {
+      const length = programEnd - programStart;
+      const elapsed = Math.min(Math.max(catchupClock() - programStart, 0), length);
+      renderProgress((elapsed / length) * 100, formatTime(elapsed), '-' + formatTime(length - elapsed));
+      renderArchiveWindow(length);
+      return;
+    }
     if (hasLiveProgram()) {
       const length = programEnd - programStart;
       const elapsed = Math.min(Math.max(playbackWallClock() - programStart, 0), length);
@@ -599,6 +683,7 @@
         if (resp.ok) {
           const data = await resp.json();
           transcodedDuration = data.duration || 0;
+          applyPendingCatchupSeek();
         }
       } catch (e) {}
     };
@@ -666,8 +751,7 @@
     // Upstream archives can't be byte-seeked, so a server-side seek would
     // re-read the recording from its start; stay within what's transcoded.
     if (cfg.catchup) {
-      const end = seekOffset + Math.max(0, transcodedDuration - 2);
-      video.currentTime = Math.max(0, Math.min(targetTime, end) - seekOffset);
+      seekCatchup(cfg.catchupStart + targetTime);
       return true;
     }
     seekInProgress = true;
@@ -966,8 +1050,8 @@
           e.preventDefault();
           video.paused ? video.play() : video.pause();
           break;
-        case 'ArrowLeft': e.preventDefault(); video.currentTime -= 10; break;
-        case 'ArrowRight': e.preventDefault(); video.currentTime += 10; break;
+        case 'ArrowLeft': e.preventDefault(); skip(-10); break;
+        case 'ArrowRight': e.preventDefault(); skip(10); break;
         case 'ArrowUp': e.preventDefault(); video.volume = Math.min(1, video.volume + 0.1); break;
         case 'ArrowDown': e.preventDefault(); video.volume = Math.max(0, video.volume - 0.1); break;
         case 'f':
@@ -1380,6 +1464,11 @@
         updateProgress();
         return;
       }
+      if (hasCatchupProgram()) {
+        seekCatchup(programStart + pct * (programEnd - programStart));
+        updateProgress();
+        return;
+      }
       const duration = totalDuration || video.duration || 0;
       if (!duration) return;
       const targetTime = pct * duration;
@@ -1538,6 +1627,7 @@
     setupPositionTracking();
     setupLiveDvrResume();
     setupLiveProgram();
+    setupCatchup();
     setupKeyboardControls();
     setupButtonHandlers();
     setupActivityTracking();

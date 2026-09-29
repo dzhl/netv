@@ -372,6 +372,29 @@ def test_catchup_player_info_builds_timeshift_url():
     assert info.program_end == program.stop.timestamp()
 
 
+def test_catchup_player_info_starts_mid_program():
+    from epg import Program
+
+    import main
+
+    program_start = (datetime.now(UTC) - timedelta(hours=3)).replace(second=0, microsecond=0)
+    program = Program("ch1", "Earlier news", program_start, program_start + timedelta(minutes=30))
+    target = program_start + timedelta(minutes=10, seconds=25)
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": [_archive_stream()]}),
+        patch("main.get_xtream_client_by_source", return_value=None),
+        patch("epg.get_programs_in_range", return_value=[program]),
+    ):
+        info = main._get_catchup_player_info("src1_42", target.timestamp())
+    begin = program_start + timedelta(minutes=10)
+    assert f"/20/{begin:%Y-%m-%d:%H-%M}/42.ts" in info.url
+    assert info.catchup_start == begin.timestamp()
+    assert info.catchup_seek == 25
+    assert info.program_start == program_start.timestamp()
+    assert info.program_end == program.stop.timestamp()
+
+
 def test_catchup_player_info_rejects_programs_outside_archive():
     from fastapi import HTTPException
 
@@ -396,12 +419,15 @@ def test_catchup_player_page_plays_archive_as_vod(auth_client):
         channel_name="Channel",
         catchup_days=2,
         catchup_start=1767261600.0,
+        catchup_seek=25.0,
     )
     with patch("main._get_catchup_player_info", return_value=info) as get_info:
         response = auth_client.get("/play/live/src1_42?start=1767261600")
     get_info.assert_called_once_with("src1_42", 1767261600.0)
     assert response.status_code == 200
     assert "catchup: true" in response.text
+    assert "catchupStart: 1767261600.0" in response.text
+    assert "catchupSeek: 25.0" in response.text
     assert 'id="go-live-btn"' in response.text
     assert 'id="jump-btn"' in response.text
     assert 'id="start-over-btn"' not in response.text
