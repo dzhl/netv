@@ -7,6 +7,11 @@ Chromecast, and Xtream-compatible players.
 > **70+ FPS** on an RTX 5090, with GPU decoding, TensorRT inference, and NVENC
 > encoding in one real-time playback pipeline.
 
+> **Missed the start? Go back and press play.** Browse earlier guide listings
+> and replay supported upstream archives on the web, Mac, Apple TV, iPhone,
+> and iPad -- with full-program seeking and no interruption while browsing.
+> [Explore catchup playback](#catchup-playback).
+
 ![EPG Guide](screenshots/epg.png)
 
 ![Player](screenshots/player.png)
@@ -41,7 +46,7 @@ through their IPTV providers.
 ## Features
 
 - **Live TV** with EPG grid guide
-- **Catchup** - When an Xtream source keeps an archive (`tv_archive`), choose an earlier program in the guide to watch it from the start, or use **Start over** on the program airing now. It works in the web player and in the Mac, Apple TV and iPhone apps; in the apps, open a stream's context menu to catch up. Guide listings are kept as long as the longest archive. Unavailable past listings are disabled in the web guide. Drag the web player's timeline to scrub backward or forward through an archived program, or use the arrow keys and **Jump**. Seeking beyond the buffered video releases the previous upstream connection before reopening the archive at the selected time and may briefly buffer. Catchup bypasses AI upscaling, retaining source resolution up to the configured resolution limit; live playback keeps its existing upscaling setting.
+- **Catchup playback** - Browse **Earlier / Now / Later**, select an available past program, or **Start over** on supported live content. Replay and seek through upstream archives on the web and across the Apple apps. [How it works](#catchup-playback).
 - **Mac app** on the [Mac App Store](https://apps.apple.com/us/app/netv-personal-tv-player/id6814189386?mt=12); Apple TV and iPhone apps are coming soon
 - **Native player gateway** - Bring your neTV channels and settings to Apple TV and other Xtream-compatible players
 - **Movies & Series** with metadata, seasons, episodes
@@ -57,6 +62,47 @@ through their IPTV providers.
 - **Resume playback** for VOD content
 - **Responsive** - works on desktop, tablet, mobile
 - **Keyboard navigation** - 10-foot UI friendly
+
+### Catchup Playback
+
+**Your guide is now a way back into programs you missed.** When an upstream
+keeps an archive, neTV lets you open it directly from the guide -- no separate
+recording setup required.
+
+- **Earlier / Now / Later:** browse earlier and upcoming schedules without
+  interrupting playback. Apple apps move in three-hour steps, up to seven days
+  in either direction. **Now** returns the guide to the current window; it
+  does not switch an archive back to live playback.
+- **Pick a past program:** select an available listing to play its archive
+  from the beginning. Unavailable past listings are dimmed and disabled;
+  Apple apps also disable upcoming programs. Guide times use your device's
+  time zone.
+- **Start over:** restart the program airing now when its upstream archive
+  supports it.
+- **Seek through the whole program:** drag the timeline on the web, Mac,
+  iPhone, or iPad. The web also supports arrow keys and **Jump**; on Apple TV,
+  use Left/Right to preview a position and Select or Play to seek.
+- **Keep browsing:** playback continues while you explore another guide
+  window. On Apple TV, selecting the playing program again expands playback.
+
+Seeking beyond the available video releases the previous upstream connection
+before reopening the archive at the selected time, so a seek may briefly
+buffer. Catchup **does not use AI upscaling**: it retains the upstream resolution
+up to the configured resolution limit. Live playback keeps its existing
+upscaling setting.
+
+**Requirements and availability:** configure an Xtream source that advertises
+archive support through `tv_archive` and `tv_archive_duration`, with matching
+EPG listings. Replay availability depends on the upstream's archive retention;
+neTV retains available guide history to cover the longest supported archive,
+up to 14 days. It cannot reconstruct missing past listings or create an archive
+where none exists. Standalone M3U `catchup="xc"` tags are not currently parsed;
+use the upstream's Xtream connection for this feature.
+
+Update the neTV server and rebuild the Apple apps from the current source to
+use the new controls. Source support does not imply that an updated App Store
+build is already available. See the [Apple app documentation](apple/README.md#catchup-and-archive-seeking)
+for native playback details.
 
 ### Apple Apps
 
