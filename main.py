@@ -672,51 +672,50 @@ async def guide_page(
     # EPG is optional - check sqlite db for data
     epg_loading = not epg.has_programs()
 
-    # Get the full saved filter for dropdown (not just current URL filter)
+    # Sidebar: "All Channels" (shared playlists, then the settings filter),
+    # then each playlist and category on its own - same as the Apple apps.
     user_settings = load_user_settings(username)
     saved_filter_list = user_settings.get("guide_filter", [])
-    saved_filter = set(saved_filter_list)  # For fast lookup
-    # Build ordered list of category objects matching user's saved order
     cat_by_id = {str(c["category_id"]): c for c in categories}
     playlist_cats = _playlist_categories()
-    ordered_filter_cats = [
-        {**c, "category_name": f"★ {c['category_name']}"} for c in playlist_cats
-    ] + [cat_by_id[cid] for cid in saved_filter_list if cid in cat_by_id]
-    saved_filter |= {c["category_id"] for c in playlist_cats}
+    default_cats = _default_guide_cats(saved_filter_list, playlist_cats)
+    all_streams, _, _ = _get_guide_streams(",".join(default_cats), username)
+    counts: dict[str, int] = {}
+    for s in all_streams:
+        for c in {str(c) for c in s.get("category_ids") or []}:
+            counts[c] = counts.get(c, 0) + 1
+    sidebar_playlists = [
+        {"id": c["category_id"], "name": c["category_name"], "count": counts.get(c["category_id"], 0)}
+        for c in playlist_cats
+    ]
+    sidebar_categories = [
+        {"id": cid, "name": cat_by_id[cid]["category_name"], "count": counts.get(cid, 0)}
+        for cid in saved_filter_list
+        if cid in cat_by_id
+    ]
+    names = {cid: c["category_name"] for cid, c in cat_by_id.items()}
+    names.update({c["category_id"]: c["category_name"] for c in playlist_cats})
 
-    # Get saved VIEW selection (separate from Settings filter)
-    saved_view_cats = user_settings.get("guide_selected_cats")  # None = show all
-    if saved_view_cats:
-        # Drop playlists deleted since the view was saved; fall back to the
-        # default view if nothing remains.
-        live_playlist_ids = {c["category_id"] for c in playlist_cats}
-        kept = [c for c in saved_view_cats if not playlists.is_playlist_id(c) or c in live_playlist_ids]
-        # Playlists created after the view was saved are shown once; if the
-        # user deselects them later, that choice sticks.
-        known = set(user_settings.get("guide_known_playlists", []))
-        new_ids = [c["category_id"] for c in playlist_cats if c["category_id"] not in known]
-        kept = [c for c in new_ids if c not in kept] + kept
-        if new_ids or kept != saved_view_cats:
-            saved_view_cats = kept or None
-            user_settings["guide_selected_cats"] = saved_view_cats
-            user_settings["guide_known_playlists"] = sorted(live_playlist_ids)
-            save_user_settings(username, user_settings)
-
-    # Determine effective cats: URL param (if present) > saved view > all from filter
+    # Selection: URL (?cats=<id>, empty = all) > saved selection > all.
+    saved_view = user_settings.get("guide_selected_cats")
     if cats_in_url:
-        # URL explicitly has cats param (could be empty for "none")
-        effective_cats = cats
-    elif saved_view_cats is not None:
-        # Use saved view selection (could be [] for "none")
-        effective_cats = ",".join(saved_view_cats)
+        requested = cats
     else:
-        # Default: shared playlists, then everything from the settings filter
-        effective_cats = ",".join(_default_guide_cats(saved_filter_list, playlist_cats))
-
-    # Use helper to get filtered/sorted streams
-    streams, ordered_cats, selected_cats = _get_guide_streams(effective_cats, username)
+        requested = saved_view[0] if saved_view and len(saved_view) == 1 else ""
+    selected_id = requested if requested in names else None
+    view = [selected_id] if selected_id else None
+    if saved_view != view and (cats_in_url or saved_view):
+        user_settings["guide_selected_cats"] = view
+        save_user_settings(username, user_settings)
+    if selected_id:
+        effective_cats = selected_id
+        streams, ordered_cats, selected_cats = _get_guide_streams(selected_id, username)
+    else:
+        effective_cats = ",".join(default_cats)
+        streams, ordered_cats, selected_cats = all_streams, default_cats, set(default_cats)
+    selected_name = names[selected_id] if selected_id else "All Channels"
     total_count = len(streams)
-    guide_sections = _guide_sections(streams, ordered_cats)
+    guide_sections = _guide_sections(streams, ordered_cats) if selected_id is None else []
 
     # Time window: 3 hours starting from offset
     now = datetime.now(UTC)
@@ -759,9 +758,12 @@ async def guide_page(
         {
             "categories": categories,
             "selected_cats": selected_cats,
-            "saved_filter": saved_filter,  # Full saved filter for dropdown (set)
-            "ordered_filter_cats": ordered_filter_cats,  # Ordered list for dropdown
-            "cats_param": cats,
+            "sidebar_playlists": sidebar_playlists,
+            "sidebar_categories": sidebar_categories,
+            "all_count": len(all_streams),
+            "selected_id": selected_id,
+            "selected_name": selected_name,
+            "cats_param": selected_id or "",
             "effective_cats": effective_cats,  # What's actually being used
             "grid_data": grid_data,
             "guide_sections": guide_sections,
@@ -2875,9 +2877,6 @@ async def save_user_prefs(
     ):
         if key in data:
             settings[key] = data[key]
-    if "guide_selected_cats" in data:
-        # The user has now seen every current playlist; don't re-add ones they left out.
-        settings["guide_known_playlists"] = sorted(c["category_id"] for c in _playlist_categories())
     save_user_settings(username, settings)
     return {"ok": True}
 

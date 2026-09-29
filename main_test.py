@@ -1250,19 +1250,45 @@ class TestPlaylists:
         rows = re.findall(r'<div class="guide-row[^"]*" data-row="(\d+)"', resp.text)
         assert rows == ["0", "1", "2"]
 
-    def test_new_playlist_joins_saved_view_once(self, auth_client):
+    def _sidebar(self, client, url="/guide"):
+        with patch("main.epg.has_programs", return_value=True):
+            text = client.get(url).text
+        aside = text[text.index("<aside") : text.index("</aside>")]
+        links = re.findall(r'data-nav="cat".*?title="([^"]*)">.*?tabular-nums[^>]*>(\d+)<', aside, re.S)
+        current = re.findall(r'aria-current="page" title="([^"]*)"', aside)
+        rows = re.findall(r'<div class="guide-row[^"]*" data-row="\d+"', text)
+        return links, current, len(rows)
+
+    def test_guide_sidebar_lists_playlists_and_categories(self, auth_client):
+        import main
+
         auth_client.post("/settings/guide-filter", json={"cats": ["1", "2"]})
         auth_client.post("/api/user-prefs", json={"guide_selected_cats": ["2"]})
+        playlist = self._create(auth_client)
+
+        links, current, rows = self._sidebar(auth_client)
+        assert links == [("All Channels", "3"), ("Favorites", "2"), ("News", "1"), ("Sports", "2")]
+        assert current == ["Sports"]
+        assert rows == 2
+
+        links, current, rows = self._sidebar(auth_client, f"/guide?cats={playlist['category_id']}")
+        assert current == ["Favorites"]
+        assert rows == 2
+        assert main.load_user_settings("testuser")["guide_selected_cats"] == [playlist["category_id"]]
+
+        _, current, rows = self._sidebar(auth_client, "/guide?cats=")
+        assert current == ["All Channels"]
+        assert rows == 3
+        assert main.load_user_settings("testuser")["guide_selected_cats"] is None
+
+    def test_old_multi_category_view_falls_back_to_all(self, auth_client):
+        auth_client.post("/settings/guide-filter", json={"cats": ["1", "2"]})
+        auth_client.post("/api/user-prefs", json={"guide_selected_cats": ["1", "2"]})
         self._create(auth_client)
 
-        def section_names():
-            with patch("main.epg.has_programs", return_value=True):
-                text = auth_client.get("/guide").text
-            return [s["name"] for s in json.loads(re.search(r"sections: (\[.*?\]),\n", text).group(1))]
-
-        assert section_names() == ["★ Favorites", "Sports"]
-        auth_client.post("/api/user-prefs", json={"guide_selected_cats": ["2"]})
-        assert section_names() == ["Sports"]
+        _, current, rows = self._sidebar(auth_client)
+        assert current == ["All Channels"]
+        assert rows == 3
 
     def test_guide_rows_use_earliest_selected_category(self, auth_client):
         cache_module.get_cache()["live_streams"].append(

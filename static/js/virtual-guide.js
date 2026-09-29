@@ -126,7 +126,7 @@ class VirtualGuide {
 
     // Handle scroll position restoration
     // Check if there's a saved scroll position that's beyond initial rows
-    const scrollKey = 'guide_scroll';
+    const scrollKey = 'guide_scroll:' + this.cats;
     const savedScroll = sessionStorage.getItem(scrollKey);
 
     if (savedScroll && this.viewport) {
@@ -392,7 +392,7 @@ class VirtualGuide {
         count: overallEnd - overallStart,
         offset: this.offset
       });
-      // Pass cats if set (for temporary dropdown filters)
+      // Pass the selected category (or the All Channels list) as-is
       if (this.cats) {
         params.set('cats', this.cats);
         params.set('exact', '1');
