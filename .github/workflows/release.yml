@@ -19,6 +19,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history and tags for the changelog
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -60,11 +62,11 @@ jobs:
           echo "" >> notes.md
           echo "Pull the image:" >> notes.md
           echo "\`\`\`bash" >> notes.md
-          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}" >> notes.md
+          echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}" >> notes.md
           echo "\`\`\`" >> notes.md
           echo "" >> notes.md
           echo "## What's Changed" >> notes.md
-          git log $(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)..HEAD --pretty=format:"- %s" >> notes.md || true
+          git log $(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || git rev-list --max-parents=0 HEAD)..HEAD --pretty=format:"- %s" | grep -v '^- Release v' >> notes.md || true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
