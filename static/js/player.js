@@ -40,6 +40,7 @@
   let castController = null;
   // AirPlay needs Safari's native HLS player; hls.js disables remote playback.
   let nativeHls = false;
+  let scrubPercent = null;
 
   // ============================================================
   // Utilities
@@ -61,8 +62,9 @@
     if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
     if (parts.length === 2) return parts[0] * 60 + parts[1];
     const n = parts[0];
-    if (totalDuration >= 3600 && n * 3600 <= totalDuration) return n * 3600;
-    if (n * 60 <= totalDuration) return n * 60;
+    const duration = timelineDuration();
+    if (duration >= 3600 && n * 3600 <= duration) return n * 3600;
+    if (n * 60 <= duration) return n * 60;
     return n;
   }
 
@@ -530,6 +532,7 @@
   }
 
   function seekCatchup(target) {
+    pendingCatchupSeek = 0;
     const loadedEnd = cfg.catchupStart + seekOffset + Math.max(0, transcodedDuration - 2);
     if (target >= cfg.catchupStart + seekOffset && target <= loadedEnd) {
       video.currentTime = target - cfg.catchupStart - seekOffset;
@@ -621,6 +624,17 @@
     if (handle) handle.style.left = pct + '%';
     if (timeCurrent) timeCurrent.textContent = currentText;
     if (timeDuration) timeDuration.textContent = rightText;
+    const slider = document.getElementById('progress-seek');
+    if (slider) {
+      if (scrubPercent === null) slider.value = pct;
+      slider.setAttribute('aria-valuetext', currentText);
+    }
+  }
+
+  function timelineDuration() {
+    if (hasCatchupProgram() || hasLiveProgram()) return programEnd - programStart;
+    const duration = totalDuration || video.duration || 0;
+    return Number.isFinite(duration) ? duration : 0;
   }
 
   // Shade the part of the program the DVR can still seek to.
@@ -650,6 +664,13 @@
   }
 
   function updateProgress() {
+    if (scrubPercent !== null) {
+      const length = timelineDuration();
+      const elapsed = length * scrubPercent / 100;
+      renderProgress(scrubPercent, formatTime(elapsed),
+        hasCatchupProgram() || hasLiveProgram() ? '-' + formatTime(length - elapsed) : formatTime(length));
+      return;
+    }
     if (hasCatchupProgram()) {
       const length = programEnd - programStart;
       const elapsed = Math.min(Math.max(catchupClock() - programStart, 0), length);
@@ -747,13 +768,13 @@
   }
 
   async function handleSeekToPosition(targetTime) {
-    if (!transcodeSessionId || seekInProgress) return false;
     // Upstream archives can't be byte-seeked, so a server-side seek would
-    // re-read the recording from its start; stay within what's transcoded.
+    // re-read the recording from its start; reopen the archive instead.
     if (cfg.catchup) {
       seekCatchup(cfg.catchupStart + targetTime);
       return true;
     }
+    if (!transcodeSessionId || seekInProgress) return false;
     seekInProgress = true;
     showLoading();
     error.classList.add('hidden');
@@ -852,9 +873,10 @@
       if (cfg.isVod) {
         document.getElementById('menu-jump')?.classList.remove('hidden');
         document.getElementById('progress-container')?.classList.remove('hidden');
-        if (totalDuration > 0) {
-          document.getElementById('seek-duration').textContent = '/ ' + formatTime(totalDuration);
-          document.getElementById('time-duration').textContent = formatTime(totalDuration);
+        const duration = timelineDuration();
+        if (duration > 0) {
+          document.getElementById('seek-duration').textContent = '/ ' + formatTime(duration);
+          document.getElementById('time-duration').textContent = formatTime(duration);
         }
         enableCcButton();
       }
@@ -1139,6 +1161,7 @@
     }
 
     function hideControls() {
+      if (scrubPercent !== null) return;
       if (settingsMenu.classList.contains('open')) return;
       if (document.getElementById('seek-container')?.classList.contains('hidden') === false) return;
       container.classList.remove('controls-visible');
@@ -1173,7 +1196,7 @@
       container.classList.add('controls-visible');
       clearTimeout(activityTimeoutId);
       activityTimeoutId = setTimeout(() => {
-        if (!settingsMenu.classList.contains('open') && seekContainer.classList.contains('hidden')) {
+        if (scrubPercent === null && !settingsMenu.classList.contains('open') && seekContainer.classList.contains('hidden')) {
           container.classList.remove('controls-visible');
           activityTimeoutId = null;
         }
@@ -1445,6 +1468,7 @@
 
     // Progress bar
     const progressBar = document.getElementById('progress-bar');
+    const progressSeek = document.getElementById('progress-seek');
 
     video.addEventListener('timeupdate', updateProgress);
     video.addEventListener('loadedmetadata', () => {
@@ -1455,9 +1479,8 @@
       updateProgress();
     });
 
-    progressBar?.addEventListener('click', async (e) => {
-      const rect = progressBar.getBoundingClientRect();
-      const pct = (e.clientX - rect.left) / rect.width;
+    async function seekToProgress(pct) {
+      pct = Math.max(0, Math.min(pct, 1));
       // Live clicks land on a moment of the broadcast, not a file offset.
       if (hasLiveProgram()) {
         seekToWallClock(programStart + pct * (programEnd - programStart));
@@ -1469,7 +1492,7 @@
         updateProgress();
         return;
       }
-      const duration = totalDuration || video.duration || 0;
+      const duration = timelineDuration();
       if (!duration) return;
       const targetTime = pct * duration;
       if (transcodeSessionId) {
@@ -1482,7 +1505,32 @@
       } else {
         video.currentTime = targetTime;
       }
+    }
+
+    progressBar?.addEventListener('click', async (e) => {
+      const rect = progressBar.getBoundingClientRect();
+      if (rect.width > 0) await seekToProgress((e.clientX - rect.left) / rect.width);
     });
+    // The native range handles mouse, touch and keyboard dragging. Preview
+    // while moving; open at most one archive request when the seek is committed.
+    progressSeek?.addEventListener('click', e => e.stopPropagation());
+    progressSeek?.addEventListener('input', () => {
+      scrubPercent = Number(progressSeek.value);
+      document.getElementById('player-container').classList.add('controls-visible');
+      updateProgress();
+    });
+    progressSeek?.addEventListener('change', async () => {
+      const pct = Number(progressSeek.value) / 100;
+      scrubPercent = null;
+      await seekToProgress(pct);
+      updateProgress();
+    });
+    const cancelScrub = () => {
+      scrubPercent = null;
+      updateProgress();
+    };
+    progressSeek?.addEventListener('pointercancel', cancelScrub);
+    progressSeek?.addEventListener('blur', cancelScrub);
 
     // Seek input handler - filter chars here (must be at input level to block typing)
     seekInput?.addEventListener('keydown', async function(e) {
@@ -1494,12 +1542,17 @@
       if (e.key !== 'Enter') return;
       e.preventDefault();
       const targetTime = parseTime(seekInput.value);
-      if (targetTime < 0 || targetTime > totalDuration) {
+      if (targetTime < 0 || targetTime > timelineDuration()) {
         seekInput.classList.add('ring-2', 'ring-red-500');
         setTimeout(() => seekInput.classList.remove('ring-2', 'ring-red-500'), 500);
         return;
       }
       seekContainer.classList.add('hidden');
+      if (cfg.catchup) {
+        seekCatchup(programStart + targetTime);
+        updateProgress();
+        return;
+      }
       const actualTranscodedEnd = seekOffset + transcodedDuration;
       if (targetTime >= seekOffset && targetTime <= actualTranscodedEnd + 10) {
         video.currentTime = targetTime - seekOffset;

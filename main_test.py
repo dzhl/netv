@@ -902,12 +902,65 @@ class TestGuide:
 
         assert rows[0]["channel"]["catchup_days"] == 1
         assert [p["catchup"] for p in rows[0]["programs"]] == [True, False]
+        assert [p["unavailable"] for p in rows[0]["programs"]] == [False, False]
         assert rows[1]["channel"]["catchup_days"] == 0
         assert [p["catchup"] for p in rows[1]["programs"]] == [False]
+        assert rows[1]["programs"][0]["unavailable"] is True
+        assert rows[1]["programs_mobile"][0]["unavailable"] is True
         mobile = {p["title"]: p for p in rows[0]["programs_mobile"]}
         assert mobile["Earlier"]["catchup"] is True
         assert mobile["Earlier"]["start_timestamp"] == past.start.timestamp()
         assert mobile["Earlier"]["end_timestamp"] == past.stop.timestamp()
+
+    @pytest.mark.parametrize("archive_days", [0, 1, 3])
+    def test_guide_disables_unavailable_past_listings(self, auth_client, archive_days):
+        from html.parser import HTMLParser
+
+        from epg import Program
+
+        class ProgramLinks(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.links = []
+
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if tag == "a" and "data-start" in attrs:
+                    self.links.append(attrs)
+
+        now = datetime.now(UTC)
+        start = now - timedelta(days=2)
+        cache_module.get_cache()["live_categories"] = [{"category_id": "1", "category_name": "Group"}]
+        cache_module.get_cache()["live_streams"] = [{
+            "stream_id": 1, "name": "Stream", "category_ids": ["1"], "epg_channel_id": "guide",
+            "source_type": "xtream", "tv_archive": 1, "tv_archive_duration": archive_days,
+        }]
+        program = Program("guide", "Earlier program", start, start + timedelta(hours=1))
+        with (
+            patch("main.epg.has_programs", return_value=True),
+            patch("main.epg.get_icons_batch", return_value={}),
+            patch("main.epg.get_programs_batch", return_value={"guide": [program]}),
+        ):
+            response = auth_client.get("/guide?cats=1&offset=-48")
+            rows = auth_client.get("/api/guide/rows?cats=1&offset=-48").json()["rows"]
+        assert response.status_code == 200
+        parser = ProgramLinks()
+        parser.feed(response.text)
+        assert len(parser.links) == 2
+        for link in parser.links:
+            if archive_days == 3:
+                assert link["href"] == f"/play/live/1?start={int(start.timestamp())}"
+                assert link["data-nav"] == "epg"
+                assert "aria-disabled" not in link
+            else:
+                assert "href" not in link
+                assert "data-nav" not in link
+                assert "focusable" not in link["class"]
+                assert link["aria-disabled"] == "true"
+                assert link["tabindex"] == "-1"
+                assert "Not available in the upstream archive" in link["title"]
+        for programs in ("programs", "programs_mobile"):
+            assert rows[0][programs][0]["unavailable"] is (archive_days != 3)
 
     def test_guide_page_exposes_timestamps_for_local_times(self, auth_client):
         from epg import Program

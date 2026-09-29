@@ -53,8 +53,16 @@ function localizeGuideTimes(root) {
 
 // Programs still in the upstream archive open from their start.
 function programHref(ch, prog) {
+  if (prog.unavailable) return '';
   const base = `/play/live/${ch.stream_id}`;
   return prog.catchup ? `${base}?start=${Math.floor(prog.start_timestamp)}` : base;
+}
+
+function programLinkAttributes(ch, prog, row, col) {
+  const href = programHref(ch, prog);
+  return href
+    ? `href="${escapeGuideHtml(href)}" tabindex="0" data-nav="epg" data-row="${row}" data-col="${col}"`
+    : 'aria-disabled="true" role="link" tabindex="-1"';
 }
 
 function catchupMark(prog) {
@@ -589,12 +597,11 @@ class VirtualGuide {
     let programsDesktop = '';
     if (row.programs && row.programs.length > 0) {
       programsDesktop = row.programs.map((prog, pIdx) => `
-        <a href="${programHref(ch, prog)}"
+        <a ${programLinkAttributes(ch, prog, index, pIdx)}
            class="absolute top-1 bottom-1 bg-gray-700 hover:bg-gray-600 rounded px-2 py-1 overflow-hidden
-                  focusable border-2 border-transparent focus:border-blue-500 focus:bg-blue-900/50"
+                  ${prog.unavailable ? 'opacity-50 cursor-not-allowed' : 'focusable'} border-2 border-transparent focus:border-blue-500 focus:bg-blue-900/50"
            style="left: ${prog.left_pct}%; width: calc(${prog.width_pct}% - 4px);"
-           tabindex="0" data-nav="epg" data-row="${index}" data-col="${pIdx}"
-           title="${escapeHtml(prog.title)}&#10;${programTimes(prog)}&#10;${escapeHtml(prog.desc)}">
+           title="${escapeHtml(prog.title)}&#10;${programTimes(prog)}&#10;${escapeHtml(prog.desc)}${prog.unavailable ? '&#10;Not available in the upstream archive' : ''}">
           <div class="text-sm font-medium truncate">${catchupMark(prog)}${escapeHtml(prog.title)}</div>
           <div class="text-xs text-gray-400 truncate">${escapeHtml(prog.desc)}</div>
         </a>
@@ -611,12 +618,11 @@ class VirtualGuide {
     let programsMobile = '';
     if (row.programs_mobile && row.programs_mobile.length > 0) {
       programsMobile = row.programs_mobile.map((prog, pIdx) => `
-        <a href="${programHref(ch, prog)}"
+        <a ${programLinkAttributes(ch, prog, index, pIdx)}
            class="absolute top-0.5 bottom-0.5 bg-gray-700 hover:bg-gray-600 rounded px-1 overflow-hidden
-                  focusable border border-gray-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-gray-800"
+                  ${prog.unavailable ? 'opacity-50 cursor-not-allowed' : 'focusable'} border border-gray-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-gray-800"
            style="left: ${prog.left_pct}%; width: calc(${prog.width_pct}% - 4px);"
-           tabindex="0" data-nav="epg" data-row="${index}" data-col="${pIdx}"
-           title="${escapeHtml(prog.title)}&#10;${programTimes(prog)}&#10;${escapeHtml(prog.desc)}">
+           title="${escapeHtml(prog.title)}&#10;${programTimes(prog)}&#10;${escapeHtml(prog.desc)}${prog.unavailable ? '&#10;Not available in the upstream archive' : ''}">
           <div class="text-[10px] font-medium truncate">${catchupMark(prog)}${escapeHtml(prog.title)}</div>
         </a>
       `).join('');

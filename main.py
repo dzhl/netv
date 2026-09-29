@@ -1009,6 +1009,7 @@ def _build_guide_rows(
                     "left_pct": left_pct,
                     "width_pct": width_pct,
                     "catchup": can_catch_up,
+                    "unavailable": p.stop <= now and not can_catch_up,
                 }
             )
             # Mobile: 2-hour window
@@ -1028,6 +1029,7 @@ def _build_guide_rows(
                         "start_timestamp": p.start.timestamp(),
                         "end_timestamp": p.stop.timestamp(),
                         "catchup": can_catch_up,
+                        "unavailable": p.stop <= now and not can_catch_up,
                     }
                 )
 
