@@ -39,6 +39,8 @@ from ffmpeg_session import (
     touch_session,
 )
 
+import ffmpeg_session
+
 
 class FakeProcess:
     """Fake async process for testing."""
@@ -63,6 +65,139 @@ def _clear_session_state():
     with _transcode_lock:
         _transcode_sessions.clear()
         _url_to_session.clear()
+
+
+ARCHIVE_URL = "https://upstream.test/timeshift/user/pass/60/2026-09-28:10-00/1.ts"
+
+
+@pytest.fixture
+def archive_runtime(tmp_path):
+    process = FakeProcess()
+    settings = {
+        "transcode_hw": "nvenc+software", "max_resolution": "4k", "quality": "high",
+        "sr_model": "upscale-model",
+    }
+    with (
+        patch.dict(_transcode_sessions, {}, clear=True),
+        patch.dict(_url_to_session, {}, clear=True),
+        patch("ffmpeg_session.get_settings", return_value=settings),
+        patch("ffmpeg_session.get_transcode_dir", return_value=tmp_path),
+        patch("ffmpeg_session.resolve_hls_master_playlist", side_effect=lambda url: url),
+        patch("ffmpeg_session.build_hls_ffmpeg_cmd", return_value=["ffmpeg", "-i", ARCHIVE_URL]) as build,
+        patch("ffmpeg_session._launch_ffmpeg", new=AsyncMock(return_value=process)) as launch,
+        patch("ffmpeg_session._spawn_background_task", side_effect=lambda coro: coro.close()),
+    ):
+        yield process, build, launch
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("url,content_type,upscale", [
+    (ARCHIVE_URL, "movie", False),
+    ("https://upstream.test/movie/1.mp4", "movie", True),
+    ("https://upstream.test/live/1.ts", "live", True),
+])
+async def test_archive_bypasses_upscale_without_changing_live_or_movies(archive_runtime, url, content_type, upscale):
+    _, build, _ = archive_runtime
+    with patch("ffmpeg_session._wait_for_playlist", new=AsyncMock(return_value=True)):
+        result = await ffmpeg_session.start_transcode(url, content_type)
+    assert build.call_args.kwargs["allow_upscale"] is upscale
+    assert build.call_args.args[6] == "4k"
+    assert build.call_args.args[7] == "high"
+    session = get_session(result["session_id"])
+    assert session["is_archive"] is (not upscale)
+    assert (pathlib.Path(session["dir"]) / "session.json").exists() is (content_type == "movie" and upscale)
+
+
+@pytest.mark.asyncio
+async def test_archive_stop_releases_recent_session_without_caching(archive_runtime):
+    process, _, _ = archive_runtime
+    with patch("ffmpeg_session._wait_for_playlist", new=AsyncMock(return_value=True)):
+        result = await ffmpeg_session.start_transcode(ARCHIVE_URL, "movie")
+    directory = pathlib.Path(get_session(result["session_id"])["dir"])
+    stop_session(result["session_id"])
+    assert process.returncode is not None
+    assert get_session(result["session_id"]) is None
+    assert ARCHIVE_URL not in _url_to_session
+    assert not directory.exists()
+
+
+@pytest.mark.asyncio
+async def test_disconnected_archive_does_not_launch_encoder(archive_runtime, tmp_path):
+    _, _, launch = archive_runtime
+    with pytest.raises(ffmpeg_session.HTTPException) as error:
+        await ffmpeg_session.start_transcode(
+            ARCHIVE_URL, "movie", is_disconnected=AsyncMock(return_value=True)
+        )
+    assert error.value.status_code == 499
+    launch.assert_not_awaited()
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_archive_disconnect_during_playlist_wait_releases_encoder(archive_runtime, tmp_path):
+    process, _, launch = archive_runtime
+    with pytest.raises(ffmpeg_session.HTTPException) as error:
+        await ffmpeg_session.start_transcode(
+            ARCHIVE_URL, "movie", is_disconnected=AsyncMock(side_effect=[False, True])
+        )
+    assert error.value.status_code == 499
+    launch.assert_awaited_once()
+    assert process.returncode is not None
+    assert not _transcode_sessions
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_archive_cancelled_startup_releases_encoder(archive_runtime, tmp_path):
+    process, _, _ = archive_runtime
+    with (
+        patch("ffmpeg_session._wait_for_playlist", side_effect=asyncio.CancelledError),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await ffmpeg_session.start_transcode(ARCHIVE_URL, "movie")
+    assert process.returncode is not None
+    assert not _transcode_sessions
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_archive_rejects_file_offset_seek_without_interrupting_playback(archive_runtime):
+    process, _, _ = archive_runtime
+    with patch("ffmpeg_session._wait_for_playlist", new=AsyncMock(return_value=True)):
+        result = await ffmpeg_session.start_transcode(ARCHIVE_URL, "movie")
+    with pytest.raises(ffmpeg_session.HTTPException) as error:
+        await ffmpeg_session.seek_transcode(result["session_id"], 600)
+    assert error.value.status_code == 400
+    assert process.returncode is None
+
+
+@pytest.mark.asyncio
+async def test_dead_archive_is_not_resumed_using_byte_seeking(archive_runtime):
+    process, build, _ = archive_runtime
+    with patch("ffmpeg_session._wait_for_playlist", new=AsyncMock(return_value=True)):
+        result = await ffmpeg_session.start_transcode(ARCHIVE_URL, "movie")
+    session = get_session(result["session_id"])
+    (pathlib.Path(session["dir"]) / "seg000.ts").write_bytes(b"x" * 2000)
+    process.returncode = 0
+    build.reset_mock()
+    result = await ffmpeg_session._handle_existing_vod_session(
+        result["session_id"], ARCHIVE_URL, "software", False
+    )
+    assert result is None
+    build.assert_not_called()
+    assert not _transcode_sessions
+
+
+def test_startup_discards_legacy_cached_archives(archive_runtime, tmp_path):
+    directory = tmp_path / "netv_transcode_archive"
+    directory.mkdir()
+    (directory / "seg000.ts").write_bytes(b"x" * 2000)
+    (directory / "session.json").write_text(json.dumps({
+        "session_id": "archive", "url": ARCHIVE_URL, "is_vod": True,
+    }))
+    cleanup_and_recover_sessions()
+    assert not directory.exists()
+    assert not _transcode_sessions
 
 
 # =============================================================================

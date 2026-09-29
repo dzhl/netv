@@ -2324,10 +2324,10 @@ async def transcode_stop(
     """Stop a transcode session (VOD sessions stay cached)."""
     if casting.manager.owns_session(session_id):
         return {"status": "casting"}
-    if force:
-        session = ffmpeg_session.get_session(session_id)
-        if session and session.get("username") != _user.get("sub", ""):
-            raise HTTPException(404, "Session not found")
+    session = ffmpeg_session.get_session(session_id)
+    force = force or bool(session and session.get("is_archive"))
+    if force and session and session.get("username") != _user.get("sub", ""):
+        raise HTTPException(404, "Session not found")
     ffmpeg_session.stop_session(session_id, force=force)
     return {"status": "stopped"}
 

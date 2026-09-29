@@ -559,6 +559,20 @@ def test_live_page_close_force_stop_checks_owner(auth_client, owner, status):
         stop.assert_not_called()
 
 
+@pytest.mark.parametrize("owner,status", [("testuser", 200), ("other", 404)])
+def test_archive_stop_without_force_still_releases_only_owner_session(auth_client, owner, status):
+    with (
+        patch("ffmpeg_session.get_session", return_value={"username": owner, "is_archive": True}),
+        patch("ffmpeg_session.stop_session") as stop,
+    ):
+        response = auth_client.post("/transcode/archive/stop")
+    assert response.status_code == status
+    if status == 200:
+        stop.assert_called_once_with("archive", force=True)
+    else:
+        stop.assert_not_called()
+
+
 class TestLoadAllEpg:
     def test_refetches_when_listings_ran_out(self, mock_deps):
         import main

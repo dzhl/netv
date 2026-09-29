@@ -16,6 +16,7 @@ import shutil
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
 
 from fastapi import HTTPException
@@ -75,6 +76,10 @@ _transcode_sessions: dict[str, dict[str, Any]] = {}
 _url_to_session: dict[str, str] = {}  # URL -> session_id (all content types)
 _transcode_lock = threading.Lock()
 _background_tasks: set[asyncio.Task[None]] = set()
+
+
+def _is_archive_url(url: str) -> bool:
+    return "/timeshift/" in urllib.parse.urlsplit(url).path
 
 
 class _DeadProcess:
@@ -169,6 +174,8 @@ def stop_session(session_id: str, force: bool = False) -> None:
         if not session:
             return
 
+        # Archive seeks open another upstream URL, so never retain their slot.
+        force = force or _is_archive_url(session.get("url", ""))
         # Skip stop if session was accessed recently (race with seeking/resume,
         # or multiple users watching same stream)
         if not force and time.time() - session.get("last_access", 0) < 5.0:
@@ -346,7 +353,7 @@ def cleanup_and_recover_sessions() -> None:
         # Try to recover VOD session
         try:
             info = json.loads(info_file.read_text())
-            if not (info.get("is_vod") and info.get("url")):
+            if not (info.get("is_vod") and info.get("url")) or _is_archive_url(info["url"]):
                 shutil.rmtree(d, ignore_errors=True)
                 removed += 1
                 continue
@@ -512,11 +519,14 @@ async def _wait_for_playlist(
     process: asyncio.subprocess.Process,
     min_segments: int = 1,
     timeout_sec: float = _PLAYLIST_WAIT_TIMEOUT_SEC,
+    is_disconnected: Callable[[], Awaitable[bool]] | None = None,
 ) -> bool:
     """Wait for playlist with min_segments, checking process health."""
     output_dir = playlist_path.parent
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
+        if is_disconnected and await is_disconnected():
+            raise HTTPException(499, "Playback request disconnected")
         if process.returncode is not None:
             return False
         if playlist_path.exists():
@@ -730,7 +740,7 @@ async def _handle_existing_vod_session(
         return _build_session_response(existing_id, snap, playlist_path)
 
     # Case 2: Dead session with no segments - invalid
-    if not segments:
+    if not segments or _is_archive_url(url):
         stop_session(existing_id, force=True)
         with _transcode_lock:
             _url_to_session.pop(url, None)
@@ -858,8 +868,10 @@ async def _do_start_transcode(
     source_id: str = "",
     bandwidth_saver: bool = False,
     audio_passthrough: bool = False,
+    is_disconnected: Callable[[], Awaitable[bool]] | None = None,
 ) -> dict[str, Any]:
     """Core transcode logic. Raises HTTPException on failure."""
+    is_archive = _is_archive_url(url)
     # Resolve HLS master playlist to highest bandwidth variant
     url = await asyncio.to_thread(resolve_hls_master_playlist, url)
 
@@ -873,13 +885,6 @@ async def _do_start_transcode(
     is_vod = content_type in ("movie", "series")
     probe_key = {"movie": "probe_movies", "series": "probe_series", "live": "probe_live"}
     do_probe = settings.get(probe_key.get(content_type, ""), False)
-
-    session_id = str(uuid.uuid4())
-    output_dir = tempfile.mkdtemp(
-        prefix=f"netv_transcode_{session_id}_",
-        dir=get_transcode_dir(),
-    )
-    playlist_path = pathlib.Path(output_dir) / "stream.m3u8"
 
     media_info: MediaInfo | None = None
     subtitles: list[SubtitleStream] = []
@@ -912,6 +917,15 @@ async def _do_start_transcode(
                 subs_str,
             )
 
+    if is_archive and is_disconnected and await is_disconnected():
+        raise HTTPException(499, "Playback request disconnected")
+
+    session_id = str(uuid.uuid4())
+    output_dir = tempfile.mkdtemp(
+        prefix=f"netv_transcode_{session_id}_",
+        dir=get_transcode_dir(),
+    )
+    playlist_path = pathlib.Path(output_dir) / "stream.m3u8"
     cmd = build_hls_ffmpeg_cmd(
         url,
         hw,
@@ -923,7 +937,7 @@ async def _do_start_transcode(
         quality,
         get_user_agent(),
         deinterlace_fallback,
-        allow_upscale=not bandwidth_saver,
+        allow_upscale=not bandwidth_saver and not is_archive,
         audio_passthrough=audio_passthrough,
     )
     passthrough_used = uses_audio_passthrough(media_info, audio_passthrough)
@@ -955,6 +969,7 @@ async def _do_start_transcode(
             "started": time.time(),
             "url": url,
             "is_vod": is_vod,
+            "is_archive": is_archive,
             "last_access": time.time(),
             "subtitles": sub_info,
             "duration": total_duration,
@@ -971,7 +986,7 @@ async def _do_start_transcode(
         }
         _url_to_session[url] = session_id
 
-    if is_vod:
+    if is_vod and not is_archive:
         session_info: dict[str, Any] = {
             "session_id": session_id,
             "url": url,
@@ -1001,12 +1016,18 @@ async def _do_start_transcode(
         (pathlib.Path(output_dir) / "session.json").write_text(json.dumps(session_info))
 
     timeout = _PLAYLIST_WAIT_SEEK_TIMEOUT_SEC if old_seek_offset > 0 else _PLAYLIST_WAIT_TIMEOUT_SEC
-    if not await _wait_for_playlist(
-        playlist_path,
-        process,
-        min_segments=2,
-        timeout_sec=timeout,
-    ):
+    try:
+        ready = await _wait_for_playlist(
+            playlist_path,
+            process,
+            min_segments=2,
+            timeout_sec=timeout,
+            is_disconnected=is_disconnected if is_archive else None,
+        )
+    except (asyncio.CancelledError, HTTPException):
+        stop_session(session_id, force=True)
+        raise
+    if not ready:
         # Wait for process to fully exit and stderr to be captured
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(process.wait(), timeout=1.0)
@@ -1061,6 +1082,11 @@ async def start_transcode(
 
     # A quality change replaces the current stream; release its slot first.
     existing_id, is_valid, old_seek_offset = _get_existing_session(url)
+    if _is_archive_url(url):
+        old_seek_offset = 0.0
+        existing = get_session(existing_id) if existing_id else None
+        if existing and existing.get("username") != username:
+            raise HTTPException(409, "This archive is playing on another device.")
     if bandwidth_saver and existing_id:
         session = get_session(existing_id)
         if session and session.get("username") != username:
@@ -1148,6 +1174,7 @@ async def start_transcode(
             source_id,
             bandwidth_saver,
             audio_passthrough=audio_passthrough,
+            is_disconnected=is_disconnected,
         )
     except HTTPException:
         if series_id is None:
@@ -1166,6 +1193,7 @@ async def start_transcode(
             source_id,
             bandwidth_saver,
             audio_passthrough=audio_passthrough,
+            is_disconnected=is_disconnected,
         )
 
 
@@ -1257,6 +1285,8 @@ async def seek_transcode(session_id: str, seek_time: float) -> dict[str, Any]:
     info = _get_seek_session_info(session_id)
     if not info:
         raise HTTPException(404, "Session not found or not VOD")
+    if _is_archive_url(info.url):
+        raise HTTPException(400, "Seek an archive by opening it at the desired start time")
 
     settings = get_settings()
     hw = settings.get("transcode_hw", "software")

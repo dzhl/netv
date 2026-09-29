@@ -27,7 +27,7 @@
   let lastSavedPosition = 0;
   let savePositionTimeout = null;
   let autoMutedByPolicy = false;
-  const transcodeSession = new window.NetvPlayback.TranscodeSession(cfg.isVod);
+  const transcodeSession = new window.NetvPlayback.TranscodeSession(cfg.isVod && !cfg.catchup);
   let adaptiveSession = null;
   let adaptivePlayback = null;
   let transcodePlaylist = null;
@@ -41,6 +41,7 @@
   // AirPlay needs Safari's native HLS player; hls.js disables remote playback.
   let nativeHls = false;
   let scrubPercent = null;
+  let archiveNavigationInProgress = false;
 
   // ============================================================
   // Utilities
@@ -513,13 +514,23 @@
   // Reopen the channel at a moment of the broadcast: the upstream serves
   // an archive from any minute, which is how catchup seeks outside what's
   // already transcoded (archives can't be byte-seeked).
-  function openArchiveAt(target) {
-    const base = '/play/live/' + encodeURIComponent(cfg.streamId);
-    if (target >= Date.now() / 1000 - 30) {
-      window.location.href = base;
-      return;
+  async function openArchiveAt(target) {
+    if (archiveNavigationInProgress) return;
+    archiveNavigationInProgress = true;
+    video.pause();
+    showLoading();
+    try {
+      // Release the upstream connection before the next page starts probing.
+      await cleanupTranscode();
+      const base = '/play/live/' + encodeURIComponent(cfg.streamId);
+      window.location.href = target >= Date.now() / 1000 - 30
+        ? base
+        : base + '?start=' + Math.floor(Math.max(target, archiveStart()));
+    } catch (e) {
+      archiveNavigationInProgress = false;
+      console.error('[CATCHUP] Could not release the previous stream:', e);
+      showError();
     }
-    window.location.href = base + '?start=' + Math.floor(Math.max(target, archiveStart()));
   }
 
   function hasCatchupProgram() {
@@ -538,7 +549,7 @@
       video.currentTime = target - cfg.catchupStart - seekOffset;
       return;
     }
-    openArchiveAt(target);
+    return openArchiveAt(target);
   }
 
   function skip(seconds) {
@@ -555,6 +566,10 @@
 
   function setupCatchup() {
     if (!cfg.catchup) return;
+    document.getElementById('go-live-btn')?.addEventListener('click', e => {
+      e.preventDefault();
+      openArchiveAt(Date.now() / 1000);
+    });
     // Carry on with whatever aired next, or rejoin live once caught up.
     video.addEventListener('ended', () => openArchiveAt(Math.max(programEnd, catchupClock())));
   }
@@ -594,8 +609,7 @@
     const container = document.getElementById('progress-container');
     const startOver = document.getElementById('start-over-btn');
     startOver?.addEventListener('click', () => {
-      window.location.href = '/play/live/' + encodeURIComponent(cfg.streamId) +
-        '?start=' + Math.floor(programStart);
+      openArchiveAt(programStart);
     });
     // Wall-clock driven, so the bar keeps up while paused or stalled.
     const tick = () => {
@@ -1488,7 +1502,7 @@
         return;
       }
       if (hasCatchupProgram()) {
-        seekCatchup(programStart + pct * (programEnd - programStart));
+        await seekCatchup(programStart + pct * (programEnd - programStart));
         updateProgress();
         return;
       }
@@ -1549,7 +1563,7 @@
       }
       seekContainer.classList.add('hidden');
       if (cfg.catchup) {
-        seekCatchup(programStart + targetTime);
+        await seekCatchup(programStart + targetTime);
         updateProgress();
         return;
       }

@@ -51,6 +51,7 @@ async function player({
   airplay = false,
   catchup = false, catchupDays = catchup ? 2 : 0, catchupStart = programStart, catchupSeek = 0,
   transcodedDuration = 0,
+  stopReady = null, stopFailure = false, startReady = null,
 } = {}) {
   isVod = isVod || catchup;
   const elements = new Map();
@@ -156,6 +157,7 @@ async function player({
       calls.push({ url, options });
       let data = { active: false };
       if (url.startsWith('/transcode/start?')) {
+        if (startReady) await startReady;
         const id = `session${++sessionNumber}`;
         data = {
           session_id: id, duration: isVod ? 3600 : 0, subtitles: [],
@@ -163,6 +165,9 @@ async function player({
           playlist: `/transcode/${id}/${isVod ? 'stream' : 'low'}.m3u8`,
           ...(!isVod ? { master_playlist: `/transcode/${id}/master.m3u8` } : {}),
         };
+      } else if (options.method === 'DELETE') {
+        if (stopReady) await stopReady;
+        if (stopFailure) return { ok: false, status: 503 };
       } else if (url.startsWith('/transcode/progress/')) {
         data = { duration: transcodedDuration };
       } else if (url.endsWith('/health')) {
@@ -530,17 +535,75 @@ test('archive scrubbing within transcoded video seeks locally in either directio
 
 test('archive jump times remain relative to the full program after seeking', async () => {
   const start = Math.floor(Date.now() / 1000) - 7200;
-  const p = await player({
-    catchup: true, programStart: start, programEnd: start + 7200,
-    catchupStart: start + 1800, transcodedDuration: 120,
-  });
-  const input = p.elements.get('seek-input');
   for (const [text, seconds] of [['10:00', 600], ['1:30:00', 5400]]) {
+    const p = await player({
+      catchup: true, programStart: start, programEnd: start + 7200,
+      catchupStart: start + 1800, transcodedDuration: 120,
+    });
+    const input = p.elements.get('seek-input');
     input.value = text;
     await input.emit('keydown', { key: 'Enter', preventDefault() {} });
     assert.equal(p.window.location.href, `/play/live/1?start=${start + seconds}`);
     assert.equal(input.classList.contains('ring-red-500'), false);
   }
+});
+
+test('archive seek waits for a forced stop before navigating', async () => {
+  let release;
+  const stopReady = new Promise(resolve => { release = resolve; });
+  const start = Math.floor(Date.now() / 1000) - 7200;
+  const p = await player({ catchup: true, programStart: start, programEnd: start + 3600, stopReady });
+  const originalUrl = p.window.location.href;
+  const seek = p.elements.get('progress-bar').emit('click', { clientX: 50 });
+  await flush();
+  assert.equal(p.window.location.href, originalUrl);
+  assert.ok(p.calls.some(call => call.options.method === 'DELETE' &&
+    call.url === '/transcode/session1?force=true'));
+  release();
+  await seek;
+  assert.equal(p.window.location.href, `/play/live/1?start=${start + 1800}`);
+  assert.deepEqual(p.errors, []);
+});
+
+test('archive seek during startup releases the eventual session before navigating', async () => {
+  let finishStartup;
+  const startReady = new Promise(resolve => { finishStartup = resolve; });
+  const start = Math.floor(Date.now() / 1000) - 7200;
+  const p = await player({ catchup: true, programStart: start, programEnd: start + 3600, startReady });
+  const originalUrl = p.window.location.href;
+  const seek = p.elements.get('progress-bar').emit('click', { clientX: 50 });
+  await flush();
+  assert.equal(p.window.location.href, originalUrl);
+  finishStartup();
+  await seek;
+  assert.equal(p.window.location.href, `/play/live/1?start=${start + 1800}`);
+  assert.ok(p.calls.some(call => call.url === '/transcode/session1?force=true'));
+});
+
+test('failed archive stop blocks navigation and exposes a playback error', async () => {
+  const start = Math.floor(Date.now() / 1000) - 7200;
+  const p = await player({
+    catchup: true, programStart: start, programEnd: start + 3600, stopFailure: true,
+  });
+  const originalUrl = p.window.location.href;
+  await p.elements.get('progress-bar').emit('click', { clientX: 50 });
+  assert.equal(p.window.location.href, originalUrl);
+  assert.equal(p.elements.get('error').classList.contains('hidden'), false);
+  assert.match(String(p.errors[0]), /Could not release the previous stream/);
+});
+
+test('closing archive playback force-releases its upstream slot', async () => {
+  const p = await player({ catchup: true });
+  await p.window.emit('pagehide');
+  assert.deepEqual(p.beacons, ['/transcode/session1/stop?force=true']);
+});
+
+test('go live releases archive playback before navigating', async () => {
+  const p = await player({ catchup: true });
+  await p.elements.get('go-live-btn').emit('click', { preventDefault() {} });
+  await flush();
+  assert.ok(p.calls.some(call => call.url === '/transcode/session1?force=true'));
+  assert.equal(p.window.location.href, '/play/live/1');
 });
 
 test('user archive seek cancels a pending sub-minute startup skip', async () => {
