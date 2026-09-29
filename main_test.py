@@ -1243,7 +1243,9 @@ class TestPlaylists:
         with patch("main.epg.has_programs", return_value=True):
             resp = auth_client.get("/guide")
 
-        sections = json.loads(re.search(r"sections: (\[.*?\]),\n", resp.text).group(1))
+        match = re.search(r"sections: (\[.*?\]),\n", resp.text)
+        assert match
+        sections = json.loads(match.group(1))
         assert sections == [{"start": 0, "name": "★ Favorites"}, {"start": 2, "name": "Sports"}]
         headings = re.findall(r'class="guide-section[^"]*">\s*<span class="truncate">([^<]*)</span>', resp.text)
         assert headings == ["★ Favorites", "Sports"]
