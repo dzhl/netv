@@ -84,6 +84,7 @@ required.
 Extensively optimized for minimal latency and CPU usage:
 
 - **Smart passthrough** - h264+aac streams remux without re-encoding (zero CPU)
+- **5.1 surround** - Surround audio stays 5.1 (AAC in browsers; Dolby Digital/Digital Plus passes through untouched to the Apple apps)
 - **Full GPU pipeline** - NVDEC decode → NVENC/VAAPI encode, CPU stays idle
 - **Probe caching** - Streams probed once, series episodes share probe data
 - **Interlace detection** - Auto-deinterlaces OTA/cable, skips progressive

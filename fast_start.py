@@ -7,7 +7,9 @@ import re
 import time
 
 from ffmpeg_command import (
+    PASSTHROUGH_AUDIO_CODECS,
     HwAccel,
+    MediaInfo,
     build_hls_ffmpeg_cmd,
     get_live_hls_list_size,
     http_reconnect_args,
@@ -50,7 +52,15 @@ def ingest_command(url: str, directory: str, user_agent: str | None) -> list[str
 
 
 def encoder_command(
-    directory: str, hw: HwAccel, resolution: str, quality: str, deinterlace: bool, high: bool
+    directory: str,
+    hw: HwAccel,
+    resolution: str,
+    quality: str,
+    deinterlace: bool,
+    high: bool,
+    *,
+    audio: MediaInfo | None = None,
+    audio_passthrough: bool = False,
 ) -> list[str]:
     cmd = build_hls_ffmpeg_cmd(
         f"{directory}/input.m3u8",
@@ -64,6 +74,8 @@ def encoder_command(
         None,
         deinterlace,
         allow_upscale=high,
+        audio_info=audio,
+        audio_passthrough=audio_passthrough,
     )
     index = cmd.index("-i")
     cmd[index:index] = ["-live_start_index", "0"]
@@ -86,8 +98,11 @@ def encoder_command(
     return cmd
 
 
-def master_playlist(resolution: str, *, include_high: bool) -> str:
-    """Stable rendition URLs; clients keep high disabled until health permits it."""
+def master_playlist(resolution: str, *, include_high: bool, audio_bitrate: int = 0) -> str:
+    """Stable rendition URLs; clients keep high disabled until health permits it.
+
+    audio_bitrate covers surround audio beyond the stereo AAC in the usual 10% margin.
+    """
     renditions = [("low", "720p")]
     if include_high:
         renditions.append(("high", resolution))
@@ -95,8 +110,18 @@ def master_playlist(resolution: str, *, include_high: bool) -> str:
     for name, size in renditions:
         _, maximum = live_video_bitrates(size)
         # Include room for AAC and MPEG-TS overhead in the advertised bandwidth.
-        lines += [f"#EXT-X-STREAM-INF:BANDWIDTH={int(maximum * 1.1)}", f"{name}.m3u8"]
+        bandwidth = int(maximum * 1.1) + audio_bitrate
+        lines += [f"#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}", f"{name}.m3u8"]
     return "\n".join(lines) + "\n"
+
+
+def surround_audio_bitrate(audio: MediaInfo | None, passthrough: bool) -> int:
+    """Extra bandwidth to advertise for surround output (Dolby copies at up to 640 kbps)."""
+    if audio and passthrough and audio.audio_codec in PASSTHROUGH_AUDIO_CODECS:
+        return 640_000
+    if audio is None or audio.audio_channels > 2:
+        return 384_000
+    return 0
 
 
 def playlist_duration(directory: str, name: str) -> float:

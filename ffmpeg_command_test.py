@@ -27,6 +27,7 @@ from ffmpeg_command import (
     http_reconnect_args,
     invalidate_series_probe_cache,
     limit_live_video_bitrate,
+    probe_audio,
     probe_media,
     restore_probe_cache_entry,
 )
@@ -406,6 +407,27 @@ class TestBuildAudioArgs:
         assert "-ar" in args
         assert expected in args
 
+    @pytest.mark.parametrize("channels", [3, 6, 8])
+    def test_surround_encodes_5_1(self, channels: int):
+        """Surround sources stay surround instead of being downmixed to stereo."""
+        args = _build_audio_args(copy_audio=False, audio_sample_rate=48000, audio_channels=channels)
+        assert args[args.index("-af") + 1] == "aformat=channel_layouts=5.1"
+        assert args[args.index("-b:a") + 1] == "384k"
+        assert "-ac" not in args
+
+    @pytest.mark.parametrize("channels", [1, 2])
+    def test_stereo_stays_stereo(self, channels: int):
+        args = _build_audio_args(copy_audio=False, audio_sample_rate=48000, audio_channels=channels)
+        assert args[args.index("-ac") + 1] == "2"
+        assert args[args.index("-b:a") + 1] == "192k"
+        assert "-af" not in args
+
+    def test_unknown_layout_keeps_surround(self):
+        """Unprobed audio lets ffmpeg keep 5.1 or fall back to stereo at runtime."""
+        args = _build_audio_args(copy_audio=False, audio_sample_rate=0)
+        assert args[args.index("-af") + 1] == "aformat=channel_layouts=stereo|5.1"
+        assert "-ac" not in args
+
 
 # =============================================================================
 # HLS Command Tests
@@ -514,6 +536,35 @@ class TestBuildHlsFfmpegCmd:
         assert not can_remux_live(FakeMediaInfo(height=2160), "1080p")  # type: ignore[arg-type]
         assert not can_remux_live(FakeMediaInfo(audio_codec="ac3"), "1080p")  # type: ignore[arg-type]
         assert not can_remux_live(FakeMediaInfo(audio_profile="HE-AAC"), "1080p")  # type: ignore[arg-type]
+
+    def test_can_remux_live_surround_audio(self):
+        """5.1 AAC copies for every client; Dolby only for passthrough clients."""
+        assert can_remux_live(FakeMediaInfo(audio_channels=6), "1080p")  # type: ignore[arg-type]
+        dolby = FakeMediaInfo(audio_codec="eac3", audio_channels=6)
+        assert not can_remux_live(dolby, "1080p")  # type: ignore[arg-type]
+        assert can_remux_live(dolby, "1080p", audio_passthrough=True)  # type: ignore[arg-type]
+        for profile in ("Main", "", "he-aac"):
+            aac = FakeMediaInfo(audio_channels=6, audio_profile=profile)
+            assert not can_remux_live(aac, "1080p")  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "codec,passthrough,expected",
+        [("eac3", True, ["-c:a", "copy"]), ("ac3", True, ["-c:a", "copy"]), ("eac3", False, None)],
+    )
+    def test_audio_info_without_media_info(self, codec, passthrough, expected):
+        """Audio facts alone decide the audio path; video is still transcoded."""
+        audio = MediaInfo(video_codec="", audio_codec=codec, pix_fmt="", audio_channels=6,
+                          audio_sample_rate=48000)  # fmt: skip
+        cmd = build_hls_ffmpeg_cmd(
+            "http://test", "software", "/tmp", audio_info=audio, audio_passthrough=passthrough
+        )
+        assert cmd[cmd.index("-c:v") + 1] != "copy"
+        index = cmd.index("-c:a")
+        if expected:
+            assert cmd[index : index + 2] == expected
+        else:
+            assert cmd[index + 1] == "aac"
+            assert cmd[cmd.index("-af") + 1] == "aformat=channel_layouts=5.1"
 
     def test_user_agent(self):
         """Test user agent is included when provided."""
@@ -1264,3 +1315,21 @@ def test_bandwidth_saver_bypasses_ai_and_scales_down(hw: HwAccel):
     assert "720" in " ".join(cmd)
     assert "dnn_processing" not in " ".join(cmd)
     assert cmd[cmd.index("-c:v") + 1] != "copy"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("ffmpeg"), reason="ffmpeg not installed")
+def test_probe_audio_reads_local_surround_segment(tmp_path):
+    """probe_audio reports the layout that decides 5.1 handling."""
+    import subprocess
+
+    path = tmp_path / "input.ts"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=sample_rate=48000",
+         "-af", "pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0", "-t", "1",
+         "-c:a", "ac3", str(path)],
+        check=True,
+    )  # fmt: skip
+    info = probe_audio(str(path))
+    assert info is not None
+    assert (info.audio_codec, info.audio_channels, info.audio_sample_rate) == ("ac3", 6, 48000)
+    assert probe_audio(str(tmp_path / "missing.ts")) is None

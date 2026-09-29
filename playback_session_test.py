@@ -99,3 +99,93 @@ async def test_legacy_saver_session_can_request_recovery(tmp_path):
                 assert ffmpeg_session.report_playback_health(session_id, "", good) == {"bandwidth_saver": False}
         finally:
             ffmpeg_session.stop_session(session_id, force=True)
+
+
+@pytest.mark.asyncio
+async def test_aac_client_does_not_reuse_dolby_session():
+    """A client without Dolby decoding replaces its own passthrough session."""
+    with (
+        patch("ffmpeg_session._get_existing_session", return_value=("old", True, 12.0)),
+        patch(
+            "ffmpeg_session.get_session",
+            return_value={"username": "viewer", "audio_passthrough": True},
+        ),
+        patch("ffmpeg_session.stop_session") as stop,
+        patch("ffmpeg_session.enforce_stream_limits", return_value=None),
+        patch("ffmpeg_session._try_reuse_session", new_callable=AsyncMock) as reuse,
+        patch(
+            "ffmpeg_session._do_start_transcode",
+            new_callable=AsyncMock,
+            return_value={"session_id": "new"},
+        ) as start,
+    ):
+        result = await ffmpeg_session.start_transcode("stream", "movie", username="viewer")
+    assert result == {"session_id": "new"}
+    stop.assert_called_once_with("old", force=True)
+    reuse.assert_not_called()
+    assert start.call_args.args[4] == 12.0  # VOD resume position survives the restart
+    assert start.call_args.kwargs["audio_passthrough"] is False
+
+
+@pytest.mark.asyncio
+async def test_dolby_session_of_another_user_is_not_stopped():
+    with (
+        patch("ffmpeg_session._get_existing_session", return_value=("old", True, 0)),
+        patch(
+            "ffmpeg_session.get_session",
+            return_value={"username": "other", "audio_passthrough": True},
+        ),
+        patch("ffmpeg_session.stop_session") as stop,
+        patch("ffmpeg_session.enforce_stream_limits", return_value=None),
+        pytest.raises(ffmpeg_session.HTTPException) as error,
+    ):
+        await ffmpeg_session.start_transcode("stream", username="viewer")
+    assert error.value.status_code == 409
+    stop.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_passthrough_client_reuses_dolby_session():
+    session = {"username": "viewer", "audio_passthrough": True}
+    with (
+        patch("ffmpeg_session._get_existing_session", return_value=("old", True, 0)),
+        patch("ffmpeg_session.get_session", return_value=session),
+        patch("ffmpeg_session.stop_session") as stop,
+        patch("ffmpeg_session.enforce_stream_limits", return_value=None),
+        patch(
+            "ffmpeg_session._try_reuse_session",
+            new_callable=AsyncMock,
+            return_value={"session_id": "old"},
+        ),
+    ):
+        result = await ffmpeg_session.start_transcode(
+            "stream", username="viewer", audio_passthrough=True
+        )
+    assert result == {"session_id": "old"}
+    stop.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_starting_passthrough_session_is_not_reused_by_aac_client():
+    """While the audio probe is pending, a passthrough request's session counts as Dolby."""
+    ffmpeg_session._transcode_sessions["pending"] = {
+        "username": "viewer", "fast_start": True, "audio_passthrough": True, "url": "stream",
+        "process": None, "dir": "/nonexistent", "last_access": 0, "started": 0,
+    }  # fmt: skip
+    ffmpeg_session._url_to_session["stream"] = "pending"
+    try:
+        with (
+            patch("ffmpeg_session._get_existing_session", return_value=("pending", True, 0)),
+            patch("ffmpeg_session.stop_session") as stop,
+            patch("ffmpeg_session.enforce_stream_limits", return_value=None),
+            patch(
+                "ffmpeg_session._do_start_transcode",
+                new_callable=AsyncMock,
+                return_value={"session_id": "new"},
+            ),
+        ):
+            await ffmpeg_session.start_transcode("stream", username="viewer")
+        stop.assert_called_once_with("pending", force=True)
+    finally:
+        ffmpeg_session._transcode_sessions.pop("pending", None)
+        ffmpeg_session._url_to_session.pop("stream", None)

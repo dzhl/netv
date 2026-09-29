@@ -245,7 +245,9 @@ final class APIClient {
             URLQueryItem(name: "deinterlace_fallback", value: deinterlaceFallback ? "1" : "0"),
             URLQueryItem(name: "source_id", value: sourceID),
             URLQueryItem(name: "bandwidth_saver", value: bandwidthSaver ? "true" : "false"),
-            URLQueryItem(name: "fast_start", value: "true")
+            URLQueryItem(name: "fast_start", value: "true"),
+            // AVPlayer decodes Dolby Digital (Plus), so surround can pass through untouched.
+            URLQueryItem(name: "audio_passthrough", value: "true")
         ]
         guard let url = components?.url else { throw APIError.invalidServer }
         let response: TranscodeResponse = try await get(url: url)

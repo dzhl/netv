@@ -28,6 +28,7 @@ from fast_start import (
     playlist_duration,
     ready_bitrate,
     segment_pts,
+    surround_audio_bitrate,
 )
 from ffmpeg_command import (
     SEG_PREFIX,
@@ -42,9 +43,11 @@ from ffmpeg_command import (
     get_user_agent,
     invalidate_series_probe_cache,
     live_video_bitrates,
+    probe_audio,
     probe_media,
     resolve_hls_master_playlist,
     restore_probe_cache_entry,
+    uses_audio_passthrough,
 )
 from playback_policy import PlaybackHealth, PlaybackPolicy, UpgradePolicy
 from util import redact_url_credentials
@@ -367,6 +370,7 @@ def cleanup_and_recover_sessions() -> None:
                     "episode_id": info.get("episode_id"),
                     "username": info.get("username", ""),
                     "source_id": info.get("source_id", ""),
+                    "audio_passthrough": info.get("audio_passthrough", False),
                 }
                 # Prefer session with seek_offset or more recent mtime
                 existing_id = _url_to_session.get(url)
@@ -606,6 +610,7 @@ class _SessionSnapshot:
     seek_offset: float
     subtitles: list[dict[str, Any]]
     duration: float
+    audio_passthrough: bool = False
 
 
 def _get_session_snapshot(session_id: str) -> _SessionSnapshot | None:
@@ -621,6 +626,7 @@ def _get_session_snapshot(session_id: str) -> _SessionSnapshot | None:
             seek_offset=session.get("seek_offset", 0),
             subtitles=session.get("subtitles") or [],
             duration=session.get("duration", 0),
+            audio_passthrough=session.get("audio_passthrough", False),
         )
 
 
@@ -760,6 +766,7 @@ async def _handle_existing_vod_session(
         quality,
         get_user_agent(),
         None,
+        audio_passthrough=snap.audio_passthrough,
     )
 
     i_idx = cmd.index("-i")
@@ -850,6 +857,7 @@ async def _do_start_transcode(
     username: str = "",
     source_id: str = "",
     bandwidth_saver: bool = False,
+    audio_passthrough: bool = False,
 ) -> dict[str, Any]:
     """Core transcode logic. Raises HTTPException on failure."""
     # Resolve HLS master playlist to highest bandwidth variant
@@ -916,7 +924,9 @@ async def _do_start_transcode(
         get_user_agent(),
         deinterlace_fallback,
         allow_upscale=not bandwidth_saver,
+        audio_passthrough=audio_passthrough,
     )
+    passthrough_used = uses_audio_passthrough(media_info, audio_passthrough)
     if old_seek_offset > 0:
         i_idx = cmd.index("-i")
         cmd.insert(i_idx, str(old_seek_offset))
@@ -954,6 +964,7 @@ async def _do_start_transcode(
             "username": username,
             "source_id": source_id,
             "bandwidth_saver": bandwidth_saver,
+            "audio_passthrough": passthrough_used,
             "playback_policy": PlaybackPolicy(bandwidth_saver=bandwidth_saver),
             "recovery_bitrate": live_video_bitrates(settings.get("max_resolution", "1080p"))[1]
             * 1.1,
@@ -973,6 +984,7 @@ async def _do_start_transcode(
             "episode_id": episode_id,
             "username": username,
             "source_id": source_id,
+            "audio_passthrough": passthrough_used,
         }
         if media_info:
             session_info["probe"] = {
@@ -1033,8 +1045,12 @@ async def start_transcode(
     bandwidth_saver: bool = False,
     fast_start: bool = False,
     is_disconnected: Callable[[], Awaitable[bool]] | None = None,
+    audio_passthrough: bool = False,
 ) -> dict[str, Any]:
-    """Start or reuse a transcode session."""
+    """Start or reuse a transcode session.
+
+    audio_passthrough: the client decodes AC-3/E-AC-3, so Dolby audio may be copied.
+    """
     if bandwidth_saver and content_type != "live":
         raise HTTPException(400, "Adaptive playback is only supported for live streams")
     # Enforce stream limits
@@ -1051,6 +1067,14 @@ async def start_transcode(
             raise HTTPException(404, "Session not found")
         stop_session(existing_id, force=True)
         existing_id, is_valid, old_seek_offset = None, False, 0.0
+    if existing_id and not audio_passthrough:
+        session = get_session(existing_id)
+        if session and session.get("audio_passthrough"):
+            # This client cannot decode the session's Dolby audio.
+            if session.get("username") != username:
+                raise HTTPException(409, "This stream is playing on another device.")
+            stop_session(existing_id, force=True)
+            existing_id, is_valid = None, False
 
     is_vod = content_type in ("movie", "series")
 
@@ -1089,7 +1113,11 @@ async def start_transcode(
         ):
             resolved = await asyncio.to_thread(resolve_hls_master_playlist, url)
             media_info = (await asyncio.to_thread(probe_media, resolved))[0]
-            remux = can_remux_live(media_info, settings.get("max_resolution", "1080p"))
+            remux = can_remux_live(
+                media_info,
+                settings.get("max_resolution", "1080p"),
+                audio_passthrough=audio_passthrough,
+            )
         if remux:
             log.info(
                 "DVR live session uses a stream-copy remux instead of fast-start: %s",
@@ -1103,6 +1131,7 @@ async def start_transcode(
                 deinterlace_fallback,
                 bandwidth_saver=bandwidth_saver,
                 is_disconnected=is_disconnected,
+                audio_passthrough=audio_passthrough,
             )
 
     # Start fresh transcode (with retry for series probe cache staleness)
@@ -1118,6 +1147,7 @@ async def start_transcode(
             username,
             source_id,
             bandwidth_saver,
+            audio_passthrough=audio_passthrough,
         )
     except HTTPException:
         if series_id is None:
@@ -1135,6 +1165,7 @@ async def start_transcode(
             username,
             source_id,
             bandwidth_saver,
+            audio_passthrough=audio_passthrough,
         )
 
 
@@ -1201,6 +1232,7 @@ class _SeekSessionInfo:
     subtitles: list[dict[str, Any]]
     series_id: int | None
     episode_id: int | None
+    audio_passthrough: bool = False
 
 
 def _get_seek_session_info(session_id: str) -> _SeekSessionInfo | None:
@@ -1216,6 +1248,7 @@ def _get_seek_session_info(session_id: str) -> _SeekSessionInfo | None:
             subtitles=session.get("subtitles") or [],
             series_id=session.get("series_id"),
             episode_id=session.get("episode_id"),
+            audio_passthrough=session.get("audio_passthrough", False),
         )
 
 
@@ -1307,6 +1340,7 @@ async def seek_transcode(session_id: str, seek_time: float) -> dict[str, Any]:
         quality,
         get_user_agent(),
         None,
+        audio_passthrough=info.audio_passthrough,
     )
     i_idx = cmd.index("-i")
     cmd.insert(i_idx, str(seek_time))
@@ -1433,6 +1467,7 @@ async def _start_fast_live(
     *,
     bandwidth_saver: bool = False,
     is_disconnected: Callable[[], Awaitable[bool]] | None = None,
+    audio_passthrough: bool = False,
 ) -> dict[str, Any]:
     """One provider reader, two independent encoders, one session/stream slot."""
     settings = get_settings()
@@ -1511,6 +1546,9 @@ async def _start_fast_live(
                 "bandwidth_saver": bandwidth_saver,
                 "playback_policy": PlaybackPolicy(bandwidth_saver=bandwidth_saver),
                 "fast_start": True,
+                # Conservative until the audio probe settles it, so AAC-only
+                # clients never reuse a session that may start copying Dolby.
+                "audio_passthrough": audio_passthrough,
                 "subtitles": [],
                 "duration": 0,
                 "seek_offset": 0,
@@ -1526,11 +1564,28 @@ async def _start_fast_live(
         )
         first_input = min(pathlib.Path(directory).glob("input_*.ts"))
         origin_pts = segment_pts(first_input)
+        # The local segment reveals the audio layout without re-reading upstream.
+        audio = await asyncio.to_thread(probe_audio, str(first_input))
         with _transcode_lock:
-            _transcode_sessions[session_id].update(origin_pts=origin_pts, origin_time=time.time())
+            _transcode_sessions[session_id].update(
+                origin_pts=origin_pts,
+                origin_time=time.time(),
+                audio_info=audio,
+                audio_passthrough=uses_audio_passthrough(audio, audio_passthrough),
+            )
         hw = settings.get("transcode_hw", "software")
         low = await launch(
-            encoder_command(directory, hw, "720p", "low", deinterlace, False), "720p"
+            encoder_command(
+                directory,
+                hw,
+                "720p",
+                "low",
+                deinterlace,
+                False,
+                audio=audio,
+                audio_passthrough=audio_passthrough,
+            ),
+            "720p",
         )
         with _transcode_lock:
             _transcode_sessions[session_id].update(process=low, extra_processes=[ingest])
@@ -1558,6 +1613,8 @@ async def _start_fast_live(
                     settings.get("quality", "high"),
                     deinterlace,
                     True,
+                    audio=audio,
+                    audio_passthrough=audio_passthrough,
                 ),
                 "high-quality",
             )
@@ -1568,7 +1625,11 @@ async def _start_fast_live(
         except OSError:
             log.exception("High-quality encoder unavailable; continuing at 720p")
         (pathlib.Path(directory) / "master.m3u8").write_text(
-            master_playlist(settings.get("max_resolution", "1080p"), include_high=high is not None)
+            master_playlist(
+                settings.get("max_resolution", "1080p"),
+                include_high=high is not None,
+                audio_bitrate=surround_audio_bitrate(audio, audio_passthrough),
+            )
         )
         return _adaptive_session_response(session_id)
     except BaseException:

@@ -1960,6 +1960,7 @@ async def transcode_start(
     source_id: str = "",
     bandwidth_saver: bool = False,
     fast_start: bool = False,
+    audio_passthrough: bool = False,  # client decodes AC-3/E-AC-3
 ):
     """Start a transcode session, return session ID."""
     if casting.manager.owns_url(url):
@@ -1995,6 +1996,7 @@ async def transcode_start(
         bandwidth_saver=bandwidth_saver,
         fast_start=fast_start,
         is_disconnected=request.is_disconnected,
+        audio_passthrough=audio_passthrough,
     )
     if fast_start and await request.is_disconnected():
         ffmpeg_session.stop_session(result["session_id"], force=True)

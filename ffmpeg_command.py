@@ -69,6 +69,8 @@ _NVDEC_MIN_COMPUTE: dict[str, float] = {
 # These codecs are nearly universal on any GPU from the last decade.
 _VAAPI_SAFE_CODECS = {"h264", "hevc", "mpeg2video", "vp8", "vp9", "vc1", "av1"}
 _QSV_SAFE_CODECS = {"h264", "hevc", "mpeg2video", "vp9", "vc1", "av1"}
+# Dolby audio that Apple players decode natively; other clients need AAC.
+PASSTHROUGH_AUDIO_CODECS = frozenset({"ac3", "eac3"})
 
 # Max resolution height by setting
 _MAX_RES_HEIGHT: dict[str, int] = {
@@ -1197,11 +1199,25 @@ def _build_video_args(
     return pre, post
 
 
-def _build_audio_args(*, copy_audio: bool, audio_sample_rate: int) -> list[str]:
+def _build_audio_args(
+    *, copy_audio: bool, audio_sample_rate: int, audio_channels: int = 0
+) -> list[str]:
     """Build audio args."""
     if copy_audio:
         return ["-c:a", "copy"]
     rate = str(audio_sample_rate) if audio_sample_rate in (44100, 48000) else "48000"
+    if audio_channels > 2:
+        # Every client decodes 5.1 AAC; wider layouts fold down to 5.1.
+        return [
+            "-c:a", "aac", "-af", "aformat=channel_layouts=5.1", "-ar", rate,
+            "-b:a", "384k", "-profile:a", "aac_low",
+        ]  # fmt: skip
+    if audio_channels == 0:
+        # Unknown layout (not probed): keep surround as 5.1, everything else as stereo.
+        return [
+            "-c:a", "aac", "-af", "aformat=channel_layouts=stereo|5.1", "-ar", rate,
+            "-b:a", "192k", "-profile:a", "aac_low",
+        ]  # fmt: skip
     return ["-c:a", "aac", "-ac", "2", "-ar", rate, "-b:a", "192k", "-profile:a", "aac_low"]
 
 
@@ -1234,21 +1250,55 @@ def _can_copy_video(
     )
 
 
-def _can_copy_audio(media_info: MediaInfo | None) -> bool:
+def _can_copy_audio(media_info: MediaInfo | None, *, passthrough: bool = False) -> bool:
     """Can audio be stream-copied?"""
+    if passthrough and media_info and media_info.audio_codec in PASSTHROUGH_AUDIO_CODECS:
+        return True
+    profile = media_info.audio_profile.upper() if media_info else ""
     return bool(
         media_info
         and media_info.audio_codec == "aac"
-        and media_info.audio_channels <= 2
         and media_info.audio_sample_rate in (44100, 48000)
         # HE-AAC has browser compatibility issues - only copy LC-AAC
-        and "HE" not in media_info.audio_profile
+        and "HE" not in profile
+        # Surround is copied only when positively identified as LC
+        and (media_info.audio_channels <= 2 or (media_info.audio_channels <= 6 and profile == "LC"))
     )
 
 
-def can_remux_live(media_info: MediaInfo | None, max_resolution: str = "1080p") -> bool:
+def uses_audio_passthrough(media_info: MediaInfo | None, passthrough: bool) -> bool:
+    """Will the output carry Dolby audio that only passthrough-capable clients can play?"""
+    return bool(passthrough and media_info and media_info.audio_codec in PASSTHROUGH_AUDIO_CODECS)
+
+
+def can_remux_live(
+    media_info: MediaInfo | None, max_resolution: str = "1080p", *, audio_passthrough: bool = False
+) -> bool:
     """Can a live source be retained via a stream-copy HLS remux?"""
-    return _can_copy_video(media_info, max_resolution) and _can_copy_audio(media_info)
+    return _can_copy_video(media_info, max_resolution) and _can_copy_audio(
+        media_info, passthrough=audio_passthrough
+    )
+
+
+def probe_audio(path: str) -> MediaInfo | None:
+    """Audio facts of a local file; video fields are left empty."""
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=codec_name,channels,sample_rate,profile", "-of", "json", path,
+    ]  # fmt: skip
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5, check=False)
+        stream = json.loads(result.stdout)["streams"][0]
+        return MediaInfo(
+            video_codec="",
+            audio_codec=stream.get("codec_name", "").lower(),
+            pix_fmt="",
+            audio_channels=int(stream.get("channels") or 0),
+            audio_sample_rate=int(stream.get("sample_rate") or 0),
+            audio_profile=stream.get("profile", ""),
+        )
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError, TypeError):
+        return None
 
 
 def build_hls_ffmpeg_cmd(
@@ -1263,11 +1313,18 @@ def build_hls_ffmpeg_cmd(
     user_agent: str | None = None,
     deinterlace_fallback: bool | None = None,
     allow_upscale: bool = True,
+    audio_info: MediaInfo | None = None,
+    audio_passthrough: bool = False,
 ) -> list[str]:
-    """Build ffmpeg command for HLS transcoding."""
+    """Build ffmpeg command for HLS transcoding.
+
+    audio_info describes the audio when media_info is unavailable. audio_passthrough
+    lets Dolby (AC-3/E-AC-3) audio through for clients that decode it natively.
+    """
+    audio = audio_info or media_info
     # Check if we can copy streams directly (compatible codecs, no processing needed)
     copy_video = _can_copy_video(media_info, max_resolution, allow_upscale=allow_upscale)
-    copy_audio = _can_copy_audio(media_info)
+    copy_audio = _can_copy_audio(audio, passthrough=audio_passthrough)
 
     # Full hardware pipeline if GPU supports the codec
     # Parse hw to get encoder type
@@ -1305,7 +1362,8 @@ def build_hls_ffmpeg_cmd(
     )
     audio_args = _build_audio_args(
         copy_audio=copy_audio,
-        audio_sample_rate=media_info.audio_sample_rate if media_info else 0,
+        audio_sample_rate=audio.audio_sample_rate if audio else 0,
+        audio_channels=audio.audio_channels if audio else 0,
     )
     sr_applied = any("dnn_processing=" in arg for arg in video_post)
     segment_duration = (

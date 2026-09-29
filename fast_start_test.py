@@ -81,6 +81,22 @@ def test_commands_only_ingest_opens_provider(tmp_path):
         assert duration * int(cmd[cmd.index("-hls_list_size") + 1]) >= 30
 
 
+
+@pytest.mark.parametrize("high", [False, True])
+def test_encoders_keep_surround_audio(tmp_path, high):
+    """Both renditions keep 5.1; Dolby is copied only for passthrough clients."""
+    from ffmpeg_command import MediaInfo
+
+    audio = MediaInfo(video_codec="", audio_codec="eac3", pix_fmt="", audio_channels=6,
+                      audio_sample_rate=48000)  # fmt: skip
+    args = (str(tmp_path), "software", "1080p" if high else "720p", "low", False, high)
+    aac = fast_start.encoder_command(*args, audio=audio)
+    assert aac[aac.index("-c:a") + 1] == "aac"
+    assert aac[aac.index("-af") + 1] == "aformat=channel_layouts=5.1"
+    dolby = fast_start.encoder_command(*args, audio=audio, audio_passthrough=True)
+    assert dolby[dolby.index("-c:a") + 1] == "copy"
+    assert dolby[dolby.index("-c:v") + 1] != "copy"
+
 def test_ingest_can_warm_encoders_before_playback_is_ready(tmp_path):
     segment = tmp_path / "input_0.ts"
     segment.write_bytes(video_packet(10) * 10)
@@ -116,6 +132,21 @@ def test_upgrade_uses_bounded_bitrate(tmp_path, hardware: HwAccel, resolution, t
     assert low[low.index("-maxrate") + 1] == "6000000"
     assert not set(low) & {"-qp", "-qp_i", "-qp_p", "-global_quality", "-crf", "constqp"}
 
+
+
+def test_master_playlist_reserves_surround_audio_bandwidth():
+    from ffmpeg_command import MediaInfo
+
+    def audio(codec, channels):
+        return MediaInfo(video_codec="", audio_codec=codec, pix_fmt="", audio_channels=channels)
+
+    assert fast_start.surround_audio_bitrate(audio("aac", 2), True) == 0
+    assert fast_start.surround_audio_bitrate(audio("aac", 6), False) == 384_000
+    assert fast_start.surround_audio_bitrate(None, False) == 384_000
+    assert fast_start.surround_audio_bitrate(audio("eac3", 6), False) == 384_000
+    assert fast_start.surround_audio_bitrate(audio("eac3", 6), True) == 640_000
+    content = fast_start.master_playlist("4k", include_high=False, audio_bitrate=640_000)
+    assert "BANDWIDTH=7240000\nlow.m3u8" in content
 
 def test_master_playlist_only_exposes_local_renditions():
     content = fast_start.master_playlist("4k", include_high=True)
