@@ -361,6 +361,24 @@ def test_user_category_restrictions_apply_to_gateway(gateway_client):
     assert response.json() == []
 
 
+def test_source_assignment_applies_to_gateway(gateway_client):
+    client, _ = gateway_client
+    auth.create_user("guest", "guest-pass")
+    settings = cache.load_server_settings()
+    settings["sources"] = [
+        {"id": "src_1", "name": "A", "type": "xtream", "url": "http://a", "users": []}
+    ]
+    cache.save_server_settings(settings)
+
+    def api(username: str, password: str, action: str):
+        params = {"username": username, "password": password, "action": action}
+        return client.get("/player_api.php", params=params).json()
+
+    assert api("guest", "guest-pass", "get_live_streams") == []
+    assert api("guest", "guest-pass", "get_live_categories") == []
+    assert len(api("player", "local-pass", "get_live_streams")) == 1
+
+
 def test_uncategorized_streams_hidden_for_restricted_user(
     gateway_client,
     monkeypatch: pytest.MonkeyPatch,

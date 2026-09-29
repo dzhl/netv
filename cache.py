@@ -478,6 +478,7 @@ class Source:
     epg_url: str = ""  # EPG URL (auto-detected from M3U/Xtream, or manual override)
     deinterlace_fallback: bool = True  # Deinterlace when probe is skipped (for OTA/HDHomeRun)
     max_streams: int = 0  # Max concurrent streams from this source (0 = unlimited)
+    users: list[str] | None = None  # Non-admin users with access (None = everyone)
 
 
 def load_server_settings() -> dict[str, Any]:
@@ -610,6 +611,13 @@ def get_sources() -> list[Source]:
     """Get list of configured sources."""
     settings = load_server_settings()
     return [Source(**s) for s in settings.get("sources", [])]
+
+
+def hidden_source_ids(username: str, admin: bool) -> set[str]:
+    """Sources the user may not see. Admins see every source."""
+    if admin:
+        return set()
+    return {s.id for s in get_sources() if s.users is not None and username not in s.users}
 
 
 def update_source_epg_url(source_id: str, epg_url: str) -> None:

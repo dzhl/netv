@@ -1425,3 +1425,96 @@ class TestPlaylists:
         assert resp.status_code == 200
         assert "CNN" in resp.text
         assert main.load_user_settings("testuser").get("guide_selected_cats") is None
+
+
+class TestSourceAssignment:
+    """Sources can be limited to selected users; admins always see everything."""
+
+    @staticmethod
+    def _setup(auth_client, family_users):
+        import auth
+
+        settings = cache_module.load_server_settings()
+        settings["sources"] = [
+            {"id": "fam", "name": "Family", "type": "m3u", "url": "http://a", "users": family_users},
+            {"id": "pub", "name": "Shared", "type": "m3u", "url": "http://b"},
+        ]
+        cache_module.save_server_settings(settings)
+        cache_module.get_cache().update(
+            {
+                "live_categories": [
+                    {"category_id": "fam_1", "category_name": "Fam", "source_id": "fam"},
+                    {"category_id": "pub_1", "category_name": "Pub", "source_id": "pub"},
+                ],
+                "live_streams": [
+                    {"stream_id": "fam_1", "name": "A", "category_ids": ["fam_1"], "source_id": "fam"},
+                    {"stream_id": "pub_1", "name": "B", "category_ids": ["pub_1"], "source_id": "pub"},
+                ],
+            }
+        )
+        auth.create_user("friend", "friendpass1")
+        auth.create_user("kid", "kidpass123")
+        return auth
+
+    def _rows(self, auth_client, user):
+        import auth
+
+        auth_client.cookies.set("token", auth.create_token({"sub": user}))
+        rows = auth_client.get("/api/guide/rows?cats=fam_1,pub_1&exact=1").json()["rows"]
+        return [r["channel"]["name"] for r in rows]
+
+    def test_assigned_source_is_hidden_from_other_users(self, auth_client):
+        self._setup(auth_client, ["kid"])
+        assert self._rows(auth_client, "testuser") == ["A", "B"]  # admin
+        assert self._rows(auth_client, "kid") == ["A", "B"]
+        assert self._rows(auth_client, "friend") == ["B"]
+
+    def test_unassigned_source_is_shared(self, auth_client):
+        self._setup(auth_client, None)
+        assert self._rows(auth_client, "friend") == ["A", "B"]
+
+    def test_hidden_source_blocks_transcode(self, auth_client):
+        import auth
+
+        self._setup(auth_client, [])
+        auth_client.cookies.set("token", auth.create_token({"sub": "kid"}))
+        resp = auth_client.get("/transcode/start?url=http://a/x.ts&source_id=fam")
+        assert resp.status_code == 403
+
+    def test_edit_source_saves_selected_users(self, auth_client):
+        self._setup(auth_client, None)
+        page = auth_client.get("/settings")
+        assert page.status_code == 200
+        assert 'name="users" value="kid"' in page.text
+        resp = auth_client.post(
+            "/settings/edit/fam",
+            data={
+                "name": "Family",
+                "source_type": "m3u",
+                "url": "http://a",
+                "access": "selected",
+                "users": ["kid", "ghost"],
+            },
+        )
+        assert resp.status_code == 200
+        fam = next(s for s in cache_module.get_sources() if s.id == "fam")
+        assert fam.users == ["kid"]
+
+        auth_client.post(
+            "/settings/edit/fam",
+            data={"name": "Family", "source_type": "m3u", "url": "http://a", "access": "all"},
+        )
+        fam = next(s for s in cache_module.get_sources() if s.id == "fam")
+        assert fam.users is None
+
+    def test_deleting_user_keeps_source_restricted(self, auth_client):
+        auth = self._setup(auth_client, ["kid"])
+        auth.delete_user("kid")
+        fam = next(s for s in cache_module.get_sources() if s.id == "fam")
+        assert fam.users == []
+
+    def test_settings_api_hides_private_settings(self, auth_client):
+        self._setup(auth_client, ["kid"])
+        data = auth_client.get("/api/settings").json()
+        assert "sources" not in data
+        assert "users" not in data

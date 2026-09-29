@@ -260,9 +260,23 @@ def _server_info(request: Request, username: str, password: str) -> dict[str, An
     }
 
 
+def _hidden_sources(username: str) -> set[str]:
+    return cache.hidden_source_ids(username, auth.is_admin(username))
+
+
 def _allowed_category_ids(username: str, snapshot: CatalogSnapshot) -> set[str]:
     unavailable = set(auth.get_user_limits(username).get("unavailable_groups", []))
     category_restricted = any(value.startswith("cat:") for value in unavailable)
+    hidden = _hidden_sources(username)
+    visible = (
+        {
+            c
+            for stream in _visible_streams(username, snapshot)
+            for c in stream.public["category_ids"]
+        }
+        if hidden
+        else None
+    )
     allowed: set[str] = set()
     for category in snapshot.categories:
         public_id = str(category["category_id"])
@@ -272,7 +286,7 @@ def _allowed_category_ids(username: str, snapshot: CatalogSnapshot) -> set[str]:
                 allowed.add(public_id)
         elif f"cat:{access_id}" not in unavailable:
             allowed.add(public_id)
-    return allowed
+    return allowed if visible is None else allowed & visible
 
 
 def _visible_streams(
@@ -282,11 +296,13 @@ def _visible_streams(
 ) -> list[GatewayStream]:
     unavailable = set(auth.get_user_limits(username).get("unavailable_groups", []))
     category_restricted = any(value.startswith("cat:") for value in unavailable)
+    hidden = _hidden_sources(username)
     streams = [
         stream
         for stream in snapshot.streams
         if (
-            (stream.access_group_ids or not category_restricted)
+            stream.source_id not in hidden
+            and (stream.access_group_ids or not category_restricted)
             and not any(
                 f"cat:{category}" in unavailable for category in stream.access_group_ids
             )

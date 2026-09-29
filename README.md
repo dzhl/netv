@@ -163,7 +163,7 @@ users who find them overkill and just want a simple IPTV player.
 | **Multi-user** | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **User roles** | ⚠️ Admin/viewer | ⚠️ Admin/viewer | ✅ Granular | ✅ Granular | ✅ Granular |
 | **Stream limits** | ✅ Per-user, per-source | ❌ | ⚠️ Per-user | ⚠️ Per-user | ⚠️ Per-user |
-| **Library permissions** | N/A | N/A | ✅ Per-library | ✅ Per-library | ✅ Per-library |
+| **Library permissions** | ✅ Per-source | N/A | ✅ Per-library | ✅ Per-library | ✅ Per-library |
 | **Favorites** | ✅ Drag-and-drop | ✅ | ✅ | ✅ | ✅ |
 | **Search** | ✅ Regex | ✅ Basic | ✅ Basic | ✅ Basic | ✅ Basic |
 | **Video transcoding** | ✅ | ❌ | ✅ | ✅ | ✅ |
@@ -278,6 +278,12 @@ address or a comma-separated list of proxy IP addresses.
 
 For restricted users, the gateway hides uncategorized streams because they
 cannot be proven to belong to an allowed category.
+
+Each source can be shared with all users or limited to selected users under
+**Settings → Sources → Available To**, so one server can host separate
+libraries for different households. Users not selected for a source cannot see
+or play its content in the web UI, the Apple apps, or the gateway. Admins
+always see every source.
 
 #### Native player 4K upscaling
 

@@ -810,6 +810,26 @@
                    class="w-24 px-3 py-1.5 bg-gray-600 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none">
             <span class="text-xs text-gray-400 ml-2">0 = unlimited</span>
           </div>
+          <div class="source-access">
+            <label class="block text-sm font-medium mb-1">Available To</label>
+            <select name="access" onchange="this.closest('.source-access').querySelector('.source-users').classList.toggle('hidden', this.value !== 'selected')"
+                    class="px-3 py-1.5 bg-gray-600 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none">
+              <option value="all" {% if source.users is not defined or source.users is none %}selected{% endif %}>All users</option>
+              <option value="selected" {% if source.users is defined and source.users is not none %}selected{% endif %}>Selected users only</option>
+            </select>
+            <div class="source-users mt-2 flex flex-wrap gap-x-4 gap-y-1 {% if source.users is not defined or source.users is none %}hidden{% endif %}">
+              {% for u in all_users if not u.admin %}
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" name="users" value="{{ u.username }}" {% if source.users is defined and source.users is not none and u.username in source.users %}checked{% endif %}
+                       class="w-4 h-4 rounded bg-gray-600 border-gray-500 text-blue-500 focus:ring-blue-500">
+                <span class="text-sm">{{ u.username }}</span>
+              </label>
+              {% else %}
+              <span class="text-xs text-gray-400">No non-admin users yet.</span>
+              {% endfor %}
+              <p class="w-full text-xs text-gray-400">Admins always have access. Unselected users won't see or play anything from this source.</p>
+            </div>
+          </div>
           <div>
             <label class="block text-sm font-medium mb-1">Refresh</label>
             <div class="flex gap-2" data-source-id="{{ source.id }}" data-source-type="{{ source.type }}">
@@ -882,6 +902,26 @@
         <input type="number" name="max_streams" value="0" min="0"
                class="w-24 px-3 py-1.5 bg-gray-600 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none">
         <span class="text-xs text-gray-400 ml-2">0 = unlimited</span>
+      </div>
+      <div class="source-access">
+        <label class="block text-sm font-medium mb-1">Available To</label>
+        <select name="access" onchange="this.closest('.source-access').querySelector('.source-users').classList.toggle('hidden', this.value !== 'selected')"
+                class="px-3 py-1.5 bg-gray-600 rounded focus:ring-2 focus:ring-blue-500 focus:outline-none">
+          <option value="all" selected>All users</option>
+          <option value="selected">Selected users only</option>
+        </select>
+        <div class="source-users mt-2 flex flex-wrap gap-x-4 gap-y-1 hidden">
+          {% for u in all_users if not u.admin %}
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" name="users" value="{{ u.username }}"
+                   class="w-4 h-4 rounded bg-gray-600 border-gray-500 text-blue-500 focus:ring-blue-500">
+            <span class="text-sm">{{ u.username }}</span>
+          </label>
+          {% else %}
+          <span class="text-xs text-gray-400">No non-admin users yet.</span>
+          {% endfor %}
+          <p class="w-full text-xs text-gray-400">Admins always have access. Unselected users won't see or play anything from this source.</p>
+        </div>
       </div>
       <div id="xtream-fields" class="grid grid-cols-2 gap-3">
         <div>

@@ -115,6 +115,11 @@ def delete_user(username: str) -> bool:
     del users[username]
     _ensure_one_admin(users)
     settings["users"] = users
+    # Drop the user from source assignments so a future account with the same
+    # name does not inherit access.
+    for source in settings.get("sources", []):
+        if isinstance(source.get("users"), list) and username in source["users"]:
+            source["users"] = [u for u in source["users"] if u != username]
     atomic_write_json(settings_file, settings)
     return True
 

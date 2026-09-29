@@ -66,6 +66,7 @@ from cache import (
     get_cached_logo,
     get_sources,
     get_watch_position,
+    hidden_source_ids,
     load_file_cache,
     load_server_settings,
     load_user_settings,
@@ -668,7 +669,8 @@ async def guide_page(
                 },
             )
 
-    categories = get_cache()["live_categories"]
+    unavailable_groups = _unavailable_groups(username)
+    categories = [c for c in get_cache()["live_categories"] if _live_allowed(c, unavailable_groups)]
     # EPG is optional - check sqlite db for data
     epg_loading = not epg.has_programs()
 
@@ -876,13 +878,33 @@ def _guide_sections(streams: list[dict], ordered_cats: list[str]) -> list[dict]:
     return sections
 
 
+def _hidden_sources(username: str) -> set[str]:
+    """Sources not assigned to this user (admins see all)."""
+    return hidden_source_ids(username, auth.is_admin(username))
+
+
+def _unavailable_groups(username: str) -> set[str]:
+    """User's blocked groups, plus every group of sources not assigned to them."""
+    groups = set(auth.get_user_limits(username).get("unavailable_groups", []))
+    for source_id in _hidden_sources(username):
+        groups.update((f"source:{source_id}", f"movies:{source_id}", f"series:{source_id}"))
+    return groups
+
+
+def _live_allowed(s: dict, unavailable_groups: set[str]) -> bool:
+    """Whether a live stream or category dict passes the user's restrictions."""
+    if f"source:{s.get('source_id', '')}" in unavailable_groups:
+        return False
+    cat_ids = s.get("category_ids") or ([s["category_id"]] if "category_id" in s else [])
+    return not any(f"cat:{c}" in unavailable_groups for c in cat_ids)
+
+
 def _live_stream_filter(username: str):
-    """Predicate for live streams the user may see (category restrictions)."""
-    unavailable_groups = set(auth.get_user_limits(username).get("unavailable_groups", []))
+    """Predicate for live streams the user may see (source and category restrictions)."""
+    unavailable_groups = _unavailable_groups(username)
 
     def stream_allowed(s: dict) -> bool:
-        cat_ids = s.get("category_ids") or []
-        return not any(f"cat:{c}" in unavailable_groups for c in cat_ids)
+        return _live_allowed(s, unavailable_groups)
 
     return stream_allowed
 
@@ -1141,8 +1163,7 @@ async def vod_page(
         raise HTTPException(403, "Access to movies is restricted")
 
     # Get user's unavailable groups for filtering
-    user_limits = auth.get_user_limits(username)
-    unavailable_groups = set(user_limits.get("unavailable_groups", []))
+    unavailable_groups = _unavailable_groups(username)
 
     # Filter by group access (movies:{source_id})
     def movie_allowed(s: dict) -> bool:
@@ -1250,8 +1271,7 @@ async def series_page(
         raise HTTPException(403, "Access to series is restricted")
 
     # Get user's unavailable groups for filtering
-    user_limits = auth.get_user_limits(username)
-    unavailable_groups = set(user_limits.get("unavailable_groups", []))
+    unavailable_groups = _unavailable_groups(username)
 
     # Filter by group access (series:{source_id})
     def series_allowed(s: dict) -> bool:
@@ -1316,8 +1336,7 @@ async def series_detail_page(
         )
         if cached_series:
             source_id = cached_series.get("source_id", "")
-            user_limits = auth.get_user_limits(username)
-            unavailable_groups = set(user_limits.get("unavailable_groups", []))
+            unavailable_groups = _unavailable_groups(username)
             if f"series:{source_id}" in unavailable_groups:
                 raise HTTPException(403, "Access to this series is restricted")
 
@@ -1417,8 +1436,7 @@ async def movie_detail_page(
     # Check access for this specific movie
     if movie:
         source_id = movie.get("source_id", "")
-        user_limits = auth.get_user_limits(username)
-        unavailable_groups = set(user_limits.get("unavailable_groups", []))
+        unavailable_groups = _unavailable_groups(username)
         if f"movies:{source_id}" in unavailable_groups:
             raise HTTPException(403, "Access to this movie is restricted")
 
@@ -1700,8 +1718,7 @@ async def player_page(
         raise HTTPException(404, "Stream not found")
 
     # Check user's group access
-    user_limits = auth.get_user_limits(username)
-    unavailable_groups = set(user_limits.get("unavailable_groups", []))
+    unavailable_groups = _unavailable_groups(username)
     log.info(
         "Access check: user=%s type=%s source_id=%s unavailable=%s",
         username,
@@ -1710,9 +1727,10 @@ async def player_page(
         unavailable_groups,
     )
     if unavailable_groups:
-        if stream_type == "live" and info.category_ids:
-            # Live streams: blocked if any category is unavailable
-            if any(f"cat:{cat_id}" in unavailable_groups for cat_id in info.category_ids):
+        if stream_type == "live":
+            # Live streams: blocked if the source or any category is unavailable
+            live = {"source_id": info.source_id, "category_ids": info.category_ids}
+            if not _live_allowed(live, unavailable_groups):
                 raise HTTPException(403, "Access to this channel is restricted")
         elif stream_type == "movie" and info.source_id:
             if f"movies:{info.source_id}" in unavailable_groups:
@@ -1797,7 +1815,7 @@ async def live_program_api(
             (s for s in get_cache()["live_streams"] if str(s.get("stream_id")) == stream_id),
             None,
         )
-        if not stream:
+        if not stream or not _live_stream_filter(user.get("sub", ""))(stream):
             raise HTTPException(404, "Stream not found")
         return _get_current_program(stream.get("epg_channel_id") or "")
 
@@ -1893,17 +1911,10 @@ async def search_page(
     user_settings = load_user_settings(username)
 
     # Filter results based on user access
-    user_limits = auth.get_user_limits(username)
-    unavailable_groups = set(user_limits.get("unavailable_groups", []))
+    unavailable_groups = _unavailable_groups(username)
 
     # Filter live results by category access
-    results["live"] = [
-        s
-        for s in results["live"]
-        if not any(
-            f"cat:{cat_id}" in unavailable_groups for cat_id in (s.get("category_ids") or [])
-        )
-    ]
+    results["live"] = [s for s in results["live"] if _live_allowed(s, unavailable_groups)]
     # Filter movie results by source access
     results["vod"] = [
         s for s in results["vod"] if f"movies:{s.get('source_id', '')}" not in unavailable_groups
@@ -1957,12 +1968,15 @@ async def search_page(
 async def stream_redirect(
     stream_type: str,
     stream_id: int,
-    _user: Annotated[dict, Depends(require_auth)],
+    user: Annotated[dict, Depends(require_auth)],
     ext: str = "",
 ):
     xtream = get_first_xtream_client()
     if not xtream:
         raise HTTPException(404, "No Xtream source configured")
+    first_xtream = next((s for s in get_sources() if s.type == "xtream"), None)
+    if first_xtream and first_xtream.id in _hidden_sources(user.get("sub", "")):
+        raise HTTPException(403, "Access to this source is restricted")
     url = xtream.build_stream_url(stream_type, stream_id, ext)
     return RedirectResponse(url, status_code=302)
 
@@ -1988,6 +2002,15 @@ async def playlist_xspf(
 # =============================================================================
 
 
+def _is_xtream_source_url(url: str, source: Source) -> bool:
+    """Whether a playback URL points at this Xtream account."""
+    base = source.url.rstrip("/")
+    if not base or not url.startswith(base + "/"):
+        return False
+    parts = url[len(base) + 1 :].split("/")
+    return not source.username or source.username in parts
+
+
 @app.get("/transcode/start")
 async def transcode_start(
     request: Request,
@@ -2008,6 +2031,16 @@ async def transcode_start(
         raise HTTPException(409, "This stream is playing on a TV. Stop casting before starting it here.")
     deinterlace_fb = deinterlace_fallback == "1"
     username = user.get("sub", "")
+
+    hidden = _hidden_sources(username)
+    if hidden and (
+        source_id in hidden
+        or any(
+            s.id in hidden and s.type == "xtream" and _is_xtream_source_url(url, s)
+            for s in get_sources()
+        )
+    ):
+        raise HTTPException(403, "Access to this source is restricted")
 
     # Get user limits for this source
     user_limits = auth.get_user_limits(username)
@@ -2250,8 +2283,7 @@ def _get_content_access(username: str) -> dict[str, bool]:
     Returns dict with 'movies' and 'series' booleans.
     If no xtream sources exist, access is granted (nothing to restrict).
     """
-    user_limits = auth.get_user_limits(username)
-    unavailable_groups = set(user_limits.get("unavailable_groups", []))
+    unavailable_groups = _unavailable_groups(username)
 
     has_movies = False
     has_series = False
@@ -2334,14 +2366,19 @@ async def settings_page(request: Request, user: Annotated[dict, Depends(require_
     source_names = {s["id"]: s["name"] for s in server_settings.get("sources", [])}
 
     # Filter categories based on user's unavailable groups
-    user_limits = auth.get_user_limits(username)
-    unavailable_groups = set(user_limits.get("unavailable_groups", []))
+    unavailable_groups = _unavailable_groups(username)
     all_live_cats = get_cache().get("live_categories", [])
-    live_categories = [
-        cat for cat in all_live_cats if f"cat:{cat['category_id']}" not in unavailable_groups
+    live_categories = [cat for cat in all_live_cats if _live_allowed(cat, unavailable_groups)]
+    vod_categories = [
+        c
+        for c in get_cache().get("vod_categories", [])
+        if f"movies:{c.get('source_id', '')}" not in unavailable_groups
     ]
-    vod_categories = get_cache().get("vod_categories", [])
-    series_categories = get_cache().get("series_categories", [])
+    series_categories = [
+        c
+        for c in get_cache().get("series_categories", [])
+        if f"series:{c.get('source_id', '')}" not in unavailable_groups
+    ]
 
     return TEMPLATES.TemplateResponse(
         request,
@@ -2436,6 +2473,16 @@ async def settings_series_filter(
     return {"status": "ok"}
 
 
+def _source_users(access: str, users: list[str] | None) -> list[str] | None:
+    """Parse source assignment: None shares with everyone, a list limits to those users."""
+    if access == "all":
+        return None
+    if access != "selected":
+        raise HTTPException(400, "Invalid access option")
+    known = set(auth.get_all_usernames())
+    return sorted({u for u in users or [] if u in known})
+
+
 @app.post("/settings/add")
 async def settings_add_source(
     _user: Annotated[dict, Depends(require_admin)],
@@ -2449,6 +2496,8 @@ async def settings_add_source(
     epg_enabled: Annotated[str, Form()] = "",  # Checkbox: "on" if checked
     deinterlace_fallback: Annotated[str, Form()] = "",  # Checkbox: "on" if checked
     max_streams: Annotated[int, Form()] = 0,
+    access: Annotated[str, Form()] = "all",  # "all" or "selected"
+    users: Annotated[list[str] | None, Form()] = None,
 ):
     # Validate inputs
     if not name or not name.strip():
@@ -2468,6 +2517,7 @@ async def settings_add_source(
         if t and re.match(r"^\d{1,2}:\d{2}$", t):
             schedule_list.append(t.zfill(5))
 
+    source_users = _source_users(access, users)
     settings = load_server_settings()
     sources = settings.get("sources", [])
     source_id = f"src_{int(time.time())}_{len(sources)}"
@@ -2484,6 +2534,7 @@ async def settings_add_source(
             "epg_enabled": epg_enabled == "on" or source_type == "epg",
             "deinterlace_fallback": deinterlace_fallback == "on",
             "max_streams": max(0, max_streams),
+            "users": source_users,
         }
     )
     settings["sources"] = sources
@@ -2507,6 +2558,8 @@ async def settings_edit_source(
     epg_url: Annotated[str, Form()] = "",
     deinterlace_fallback: Annotated[str, Form()] = "",  # Checkbox: "on" if checked
     max_streams: Annotated[int, Form()] = 0,
+    access: Annotated[str, Form()] = "all",  # "all" or "selected"
+    users: Annotated[list[str] | None, Form()] = None,
 ):
     # Validate inputs
     if not name or not name.strip():
@@ -2526,6 +2579,7 @@ async def settings_edit_source(
         if t and re.match(r"^\d{1,2}:\d{2}$", t):
             schedule_list.append(t.zfill(5))  # Normalize to HH:MM
 
+    source_users = _source_users(access, users)
     settings = load_server_settings()
     for s in settings.get("sources", []):
         if s["id"] == source_id:
@@ -2540,6 +2594,7 @@ async def settings_edit_source(
             s["epg_url"] = epg_url.strip()
             s["deinterlace_fallback"] = deinterlace_fallback == "on"
             s["max_streams"] = max(0, max_streams)
+            s["users"] = source_users
             break
     save_server_settings(settings)
     clear_all_caches()
@@ -3262,9 +3317,23 @@ async def clear_data_cache(_user: Annotated[dict, Depends(require_admin)]):
     return {"ok": True, "cleared": count}
 
 
+# Only these keys are exposed/editable; users, secrets and sources stay private.
+_API_SETTINGS_KEYS = (
+    "transcode_mode",
+    "transcode_hw",
+    "vod_transcode_cache_mins",
+    "probe_live",
+    "probe_movies",
+    "probe_series",
+    "vod_order",
+    "series_order",
+)
+
+
 @app.get("/api/settings")
 async def get_settings_api(_user: Annotated[dict, Depends(require_auth)]):
-    return load_server_settings()
+    settings = load_server_settings()
+    return {key: settings[key] for key in _API_SETTINGS_KEYS if key in settings}
 
 
 @app.post("/api/settings")
@@ -3273,19 +3342,8 @@ async def update_settings_api(
     _user: Annotated[dict, Depends(require_admin)],
 ):
     data = await request.json()
-    # Whitelist allowed keys - never allow users/secret_key to be overwritten
-    allowed_keys = {
-        "transcode_mode",
-        "transcode_hw",
-        "vod_transcode_cache_mins",
-        "probe_live",
-        "probe_movies",
-        "probe_series",
-        "vod_order",
-        "series_order",
-    }
     settings = load_server_settings()
-    for key in allowed_keys:
+    for key in _API_SETTINGS_KEYS:
         if key in data:
             settings[key] = data[key]
     save_server_settings(settings)
