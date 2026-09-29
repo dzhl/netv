@@ -710,6 +710,7 @@ async def guide_page(
     # Use helper to get filtered/sorted streams
     streams, ordered_cats, selected_cats = _get_guide_streams(effective_cats, username)
     total_count = len(streams)
+    guide_sections = _guide_sections(streams, ordered_cats)
 
     # Time window: 3 hours starting from offset
     now = datetime.now(UTC)
@@ -757,6 +758,8 @@ async def guide_page(
             "cats_param": cats,
             "effective_cats": effective_cats,  # What's actually being used
             "grid_data": grid_data,
+            "guide_sections": guide_sections,
+            "section_by_start": {s["start"]: s for s in guide_sections},
             "time_markers": time_markers,
             "time_markers_mobile": time_markers_mobile,
             "offset": offset,
@@ -793,10 +796,7 @@ def _get_guide_streams(cats: str, username: str) -> tuple[list[dict], list[str],
     cat_order = {c: i for i, c in enumerate(ordered_cats)}
 
     def stream_sort_key(s: dict) -> int:
-        for c in s.get("category_ids") or []:
-            if str(c) in cat_order:
-                return cat_order[str(c)]
-        return len(ordered_cats)
+        return _guide_section_rank(s, cat_order, len(ordered_cats))
 
     playlist_ids = [c for c in ordered_cats if playlists.is_playlist_id(c)]
     category_cats = selected_cats.difference(playlist_ids)
@@ -840,6 +840,32 @@ def _get_guide_streams(cats: str, username: str) -> tuple[list[dict], list[str],
             s = {**s, "category_ids": [*(s.get("category_ids") or []), *memberships[key]]}
         merged.append(s)
     return merged, ordered_cats, selected_cats
+
+
+def _guide_section_rank(s: dict, cat_order: dict[str, int], default: int) -> int:
+    """Position of the earliest selected category (or playlist) a stream belongs to."""
+    return min(
+        (cat_order[str(c)] for c in s.get("category_ids") or [] if str(c) in cat_order),
+        default=default,
+    )
+
+
+def _guide_sections(streams: list[dict], ordered_cats: list[str]) -> list[dict]:
+    """Headings for the web guide: the row index where each selected category starts."""
+    cat_order = {c: i for i, c in enumerate(ordered_cats)}
+    names = {str(c["category_id"]): c["category_name"] for c in get_cache().get("live_categories", [])}
+    names.update({c["category_id"]: f"★ {c['category_name']}" for c in _playlist_categories()})
+    sections = []
+    current = None
+    for index, s in enumerate(streams):
+        rank = _guide_section_rank(s, cat_order, -1)
+        if rank < 0 or rank == current:
+            continue
+        current = rank
+        name = names.get(ordered_cats[rank])
+        if name:
+            sections.append({"start": index, "name": name})
+    return sections
 
 
 def _live_stream_filter(username: str):

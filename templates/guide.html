@@ -19,12 +19,16 @@
   contain-intrinsic-size: auto 4rem; /* approximate row height */
 }
 
+/* Section headings; heights must match VirtualGuide sectionHeight/sectionHeightMobile */
+.guide-section { height: 32px; }
+
 /* Mobile (width < 512px): show compact-only, hide desktop-only */
 @media (max-width: 511px) {
   .guide-container .compact-only { display: flex; }
   .guide-container .compact-only-block { display: block; }
   .guide-container .desktop-only { display: none; }
   .guide-container .desktop-only-block { display: none; }
+  .guide-section { height: 24px; }
 }
 
 /* Landscape mobile: hide header, compact time row */
@@ -224,6 +228,12 @@
 
     <!-- Channel Rows -->
     {% for row in grid_data %}
+    {% set section = section_by_start.get(loop.index0) if section_by_start is defined else none %}
+    {% if section %}
+    <div class="guide-section flex items-center px-2 bg-gray-900 border-b border-gray-700 text-xs sm:text-sm font-semibold text-gray-200">
+      <span class="truncate">{{ section.name }}</span>
+    </div>
+    {% endif %}
     <div class="guide-row flex border-b border-gray-700 hover:bg-gray-750" data-row="{{ loop.index0 }}">
       <!-- Mobile Channel Info -->
       <div class="compact-only w-32 flex-shrink-0 p-1 items-center bg-gray-800 sticky left-0 z-10 border-r border-gray-700">
@@ -313,6 +323,7 @@ const GUIDE_CONFIG = {
   offset: {{ offset }},
   cats: {{ (effective_cats if effective_cats is defined else cats_param) | tojson }},
   initialRows: {{ grid_data | tojson | safe }},
+  sections: {{ (guide_sections if guide_sections is defined else []) | tojson }},
   // Logo URL proxy (matches _logo_url_filter in Python)
   logoUrlFilter: function(url) {
     if (!url || url.startsWith('/') || url.startsWith('data:')) {
@@ -401,6 +412,7 @@ const GUIDE_CONFIG = {
         initialRows: GUIDE_CONFIG.initialRows,
         offset: GUIDE_CONFIG.offset,
         cats: GUIDE_CONFIG.cats,
+        sections: GUIDE_CONFIG.sections,
         rowHeight: 64,  // 4rem desktop
         rowHeightMobile: 40,  // 2.5rem mobile
         bufferSize: 50,
@@ -468,7 +480,7 @@ const GUIDE_CONFIG = {
       // Check if row is outside rendered range
       if (row < vg.renderedRange.start || row >= vg.renderedRange.end) {
         // Scroll to bring row into view, then focus after render
-        const targetScroll = row * rowHeight - (viewport.clientHeight / 2) + (rowHeight / 2);
+        const targetScroll = vg.rowTop(row) - (viewport.clientHeight / 2) + (rowHeight / 2);
         viewport.scrollTop = Math.max(0, targetScroll);
 
         // Wait for render and then focus

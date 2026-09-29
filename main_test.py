@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import json
+import re
 
 import pytest
 
@@ -1235,6 +1236,28 @@ class TestPlaylists:
         assert resp.status_code == 200
         assert "★ Favorites" in resp.text
         assert f'"{playlist["category_id"]},1"' in resp.text
+
+    def test_guide_page_shows_section_headings(self, auth_client):
+        self._create(auth_client)
+        auth_client.post("/settings/guide-filter", json={"cats": ["2"]})
+        with patch("main.epg.has_programs", return_value=True):
+            resp = auth_client.get("/guide")
+
+        sections = json.loads(re.search(r"sections: (\[.*?\]),\n", resp.text).group(1))
+        assert sections == [{"start": 0, "name": "★ Favorites"}, {"start": 2, "name": "Sports"}]
+        headings = re.findall(r'class="guide-section[^"]*">\s*<span class="truncate">([^<]*)</span>', resp.text)
+        assert headings == ["★ Favorites", "Sports"]
+        rows = re.findall(r'<div class="guide-row[^"]*" data-row="(\d+)"', resp.text)
+        assert rows == ["0", "1", "2"]
+
+    def test_guide_rows_use_earliest_selected_category(self, auth_client):
+        cache_module.get_cache()["live_streams"].append(
+            {"stream_id": 4, "name": "Both", "category_ids": ["2", "1"], "epg_channel_id": "", "source_id": "s"}
+        )
+
+        payload = auth_client.get("/api/guide/rows?cats=1,2").json()
+
+        assert [r["channel"]["stream_id"] for r in payload["rows"]] == [1, 4, 2, 3]
 
     def test_empty_playlists_are_hidden_from_guide(self, auth_client):
         auth_client.post("/api/playlists", json={"name": "Empty"})

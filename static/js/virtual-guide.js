@@ -7,6 +7,8 @@
 const VIRTUAL_GUIDE_DEFAULTS = {
   ROW_HEIGHT_DESKTOP: 64,       // 4rem in pixels
   ROW_HEIGHT_MOBILE: 40,        // 2.5rem in pixels
+  SECTION_HEIGHT_DESKTOP: 32,   // Must match .guide-section in guide.html
+  SECTION_HEIGHT_MOBILE: 24,
   BUFFER_SIZE: 50,              // Rows to load above/below viewport
   MAX_CACHE_SIZE: 500,          // Evict cache beyond this
   MAX_RETRIES: 3,               // Retry failed fetches this many times
@@ -16,6 +18,15 @@ const VIRTUAL_GUIDE_DEFAULTS = {
   FETCH_DEBOUNCE_MS: 150,       // Wait for scroll to settle before fetching
   RESIZE_DEBOUNCE_MS: 100,      // Debounce window resize handler
 };
+
+function escapeGuideHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+}
 
 class VirtualGuide {
   constructor(options) {
@@ -30,6 +41,11 @@ class VirtualGuide {
     this.initialRows = options.initialRows || [];
     this.offset = options.offset || 0;
     this.cats = options.cats || '';
+    // Section headings sit above the row where each category starts.
+    this.sectionHeight = options.sectionHeight || D.SECTION_HEIGHT_DESKTOP;
+    this.sectionHeightMobile = options.sectionHeightMobile || D.SECTION_HEIGHT_MOBILE;
+    this.sections = new Map((options.sections || []).map(s => [s.start, s]));
+    this.sectionStarts = [...this.sections.keys()].sort((a, b) => a - b);
     this.logoUrlFilter = options.logoUrlFilter || (url => url);
 
     // State
@@ -60,6 +76,39 @@ class VirtualGuide {
     return this.isMobile ? this.rowHeightMobile : this.rowHeight;
   }
 
+  get currentSectionHeight() {
+    return this.isMobile ? this.sectionHeightMobile : this.sectionHeight;
+  }
+
+  get totalHeight() {
+    return this.totalRows * this.currentRowHeight + this.sectionStarts.length * this.currentSectionHeight;
+  }
+
+  /** Number of section headings at or above the given row. */
+  sectionsThrough(index) {
+    let lo = 0, hi = this.sectionStarts.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.sectionStarts[mid] <= index) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+  }
+
+  /** Pixel offset of a row's top edge (below its section heading, if any). */
+  rowTop(index) {
+    return index * this.currentRowHeight + this.sectionsThrough(index) * this.currentSectionHeight;
+  }
+
+  /** Row at a pixel offset. */
+  rowAt(offset) {
+    let lo = 0, hi = Math.max(0, this.totalRows - 1);
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (this.rowTop(mid) <= offset) lo = mid; else hi = mid - 1;
+    }
+    return lo;
+  }
+
   get visibleCount() {
     if (!this.viewport) return 30;
     return Math.ceil(this.viewport.clientHeight / this.currentRowHeight) + 1;
@@ -82,7 +131,7 @@ class VirtualGuide {
 
     if (savedScroll && this.viewport) {
       const scrollTop = parseInt(savedScroll);
-      const firstVisible = Math.floor(scrollTop / this.currentRowHeight);
+      const firstVisible = this.rowAt(scrollTop);
 
       // If saved position is beyond initial batch, fetch first then scroll
       if (firstVisible >= this.initialRows.length) {
@@ -113,7 +162,7 @@ class VirtualGuide {
     // Create spacer for full height scrollbar
     this.spacer = document.createElement('div');
     this.spacer.className = 'virtual-spacer';
-    this.spacer.style.height = `${this.totalRows * this.currentRowHeight}px`;
+    this.spacer.style.height = `${this.totalHeight}px`;
     this.spacer.style.position = 'absolute';
     this.spacer.style.top = '0';
     this.spacer.style.left = '0';
@@ -127,7 +176,7 @@ class VirtualGuide {
     this.content.style.zIndex = '1';
 
     // Move existing rows into content container
-    const existingRows = this.viewport.querySelectorAll('.guide-row');
+    const existingRows = this.viewport.querySelectorAll('.guide-row, .guide-section');
     existingRows.forEach(row => this.content.appendChild(row));
 
     // Set viewport to relative positioning
@@ -166,7 +215,7 @@ class VirtualGuide {
         this.isMobile = window.innerWidth < D.MOBILE_BREAKPOINT;
         if (wasMobile !== this.isMobile) {
           // Row height changed, update spacer
-          this.spacer.style.height = `${this.totalRows * this.currentRowHeight}px`;
+          this.spacer.style.height = `${this.totalHeight}px`;
           this.updateVisibleRange();
         }
       }, D.RESIZE_DEBOUNCE_MS);
@@ -181,7 +230,7 @@ class VirtualGuide {
     clearTimeout(this.renderDebounce);
 
     const scrollTop = this.viewport.scrollTop;
-    const firstVisible = Math.floor(scrollTop / this.currentRowHeight);
+    const firstVisible = this.rowAt(scrollTop);
     const lastVisible = firstVisible + this.visibleCount;
 
     // Track scroll direction
@@ -215,7 +264,7 @@ class VirtualGuide {
 
   async updateVisibleRange() {
     const scrollTop = this.viewport.scrollTop;
-    const firstVisible = Math.floor(scrollTop / this.currentRowHeight);
+    const firstVisible = this.rowAt(scrollTop);
     const lastVisible = firstVisible + this.visibleCount;
 
     // Calculate ranges: visible, forward buffer, backward buffer
@@ -412,6 +461,8 @@ class VirtualGuide {
     const html = [];
 
     for (let i = this.renderedRange.start; i < this.renderedRange.end; i++) {
+      const section = this.sections.get(i);
+      if (section) html.push(this.renderSection(section));
       const row = this.cache.get(i);
       if (row) {
         html.push(this.renderRow(row, i));
@@ -421,7 +472,9 @@ class VirtualGuide {
     }
 
     // Position content at the right scroll offset
-    this.content.style.transform = `translateY(${this.renderedRange.start * this.currentRowHeight}px)`;
+    const start = this.renderedRange.start;
+    const top = this.rowTop(start) - (this.sections.has(start) ? this.currentSectionHeight : 0);
+    this.content.style.transform = `translateY(${top}px)`;
     this.content.innerHTML = html.join('');
   }
 
@@ -452,6 +505,14 @@ class VirtualGuide {
     for (let i = 0; i < removeCount; i++) {
       this.cache.delete(toRemove[i]);
     }
+  }
+
+  renderSection(section) {
+    return `
+      <div class="guide-section flex items-center px-2 bg-gray-900 border-b border-gray-700 text-xs sm:text-sm font-semibold text-gray-200">
+        <span class="truncate">${escapeGuideHtml(section.name)}</span>
+      </div>
+    `;
   }
 
   renderPlaceholder(index) {
@@ -489,15 +550,7 @@ class VirtualGuide {
     const iconUrl = ch.icon ? this.logoUrlFilter(ch.icon) : '';
     const height = this.currentRowHeight;
 
-    // Escape HTML in text content
-    const escapeHtml = (str) => {
-      if (!str) return '';
-      return str.replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
-    };
+    const escapeHtml = escapeGuideHtml;
 
     // Desktop programs
     let programsDesktop = '';
