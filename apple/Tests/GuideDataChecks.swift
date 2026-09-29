@@ -88,6 +88,23 @@ struct GuideDataChecks {
         let replay = PlayerSelection(channel: archive, program: nil, catchupStart: now - 7200)
         precondition(!live.isCatchup && replay.isCatchup)
         precondition(live.id == "7" && replay.id != live.id, "Archived playback must restart the player")
+        let base = floor(now / 60) * 60 - 7200
+        let recording = try program(left: 0, width: 100, start: base, end: base + 3600)
+        let sought = PlayerSelection(channel: archive, program: recording, catchupStart: base + 625)
+        let timeline = ArchiveTimeline(selection: sought)!
+        precondition(timeline.streamStart == base + 600, "Archives start on whole minutes")
+        precondition(timeline.elapsed(mediaTime: 25) == 625, "The timeline must include the skipped portion")
+        precondition(timeline.duration == 3600, "Reopening must retain the full program duration")
+        precondition(timeline.localPosition(elapsed: 650, seekable: [0...120]) == 50)
+        precondition(timeline.localPosition(elapsed: 300, seekable: [0...120]) == nil, "Earlier media must reopen")
+        precondition(timeline.localPosition(elapsed: 1200, seekable: [0...120]) == nil, "Unproduced media must reopen")
+        precondition(timeline.localPosition(elapsed: 660, seekable: [0...30, 90...120]) == nil, "Do not seek into a media gap")
+        precondition(timeline.timestamp(elapsed: -10) == base)
+        precondition(timeline.timestamp(elapsed: 4000) == base + 3599, "Do not accidentally open the next program")
+        precondition(timeline.elapsed(mediaTime: .nan) == 0)
+        precondition(ArchiveTimeline(selection: live) == nil)
+        let adjusted = ArchiveTimeline(selection: sought, streamStart: base + 590)!
+        precondition(adjusted.elapsed(mediaTime: 35) == 625, "Use the server's actual archive start")
         print("Guide checks passed: timestamps, clipping, distinct categories, catchup and legacy responses")
     }
 }

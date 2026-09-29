@@ -43,6 +43,7 @@ final class APIClient {
     func catchup(server: String, channelID: String) async throws -> CatchupListing {
         CatchupListing(days: 0, programs: [])
     }
+    func keepArchiveAlive(server: String, sessionID: String) async throws {}
     func validateSession(server: String) async throws -> Bool { false }
     func login(server: String, username: String, password: String) async throws -> Bool { true }
     func logout(server: String) async {}
@@ -117,10 +118,29 @@ struct PlaybackStartChecks {
         precondition(APIClient.active.isEmpty)
         precondition(APIClient.requestedCatchup.allSatisfy { $0 == nil }, "Live tuning must not request the archive")
 
-        let replay = PlayerSelection(channel: c.channel, program: nil, catchupStart: 1_700_000_000)
+        let now = 1_700_010_000.0
+        let archiveChannel = try JSONDecoder().decode(Channel.self, from: Data("""
+            {"stream_id":"c","name":"Stream","icon":"","catchup_days":2}
+            """.utf8))
+        let archiveProgram = try JSONDecoder().decode(Program.self, from: Data("""
+            {"title":"Recording","desc":"","start":"10:00","end":"11:00",
+             "left_pct":0,"width_pct":100,"start_timestamp":1700000000,"end_timestamp":1700011000}
+            """.utf8))
+        let replay = PlayerSelection(channel: archiveChannel, program: archiveProgram, catchupStart: 1_700_000_000)
         model.selection = replay
         let archived = try await model.playerConfiguration(for: replay)
         precondition(APIClient.requestedCatchup.last == 1_700_000_000, "Catchup must request its program start")
+        try model.seekCatchup(replay, to: 1_700_000_625.75, resume: false, now: now)
+        let sought = model.selection!
+        precondition(sought.catchupStart == 1_700_000_625 && sought.startPaused)
+        precondition(sought.program == archiveProgram, "Reopening must retain the original program")
+        let resumed = try await model.playerConfiguration(for: sought)
+        precondition(APIClient.active == [resumed.transcodeSessionID!])
+        precondition(!APIClient.overlapping, "Archive seeking must release the old upstream session")
+        try model.seekCatchup(replay, to: 1_700_002_000, resume: true, now: now)
+        precondition(model.selection == sought, "Ignore seek requests from a replaced player")
+        try model.seekCatchup(sought, to: now - 5, resume: true, now: now)
+        precondition(model.selection?.isCatchup == false, "Seeking to the live edge should return to live")
         model.selection = c
         let live = try await model.playerConfiguration(for: c)
         precondition(APIClient.requestedCatchup.last == .some(nil), "Going live must leave the archive")

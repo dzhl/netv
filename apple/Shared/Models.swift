@@ -272,14 +272,49 @@ struct CatchupListing: Decodable {
 struct PlayerSelection: Identifiable, Hashable {
     let channel: Channel
     let program: Program?
-    /// Unix start of an archived program played from its start; nil plays live.
+    /// Requested Unix position within the upstream archive; nil plays live.
     var catchupStart: Double?
+    var startPaused = false
 
     var isCatchup: Bool { catchupStart != nil }
 
-    /// Distinct per archived program so switching between them restarts playback.
+    /// Distinct per archive position so seeking outside the current media restarts playback.
     var id: String {
         guard let catchupStart else { return channel.id }
         return "\(channel.id)@\(Int(catchupStart))"
+    }
+}
+
+struct ArchiveTimeline {
+    let start: Double
+    let end: Double
+    let streamStart: Double
+
+    init?(selection: PlayerSelection, streamStart: Double? = nil) {
+        guard let requested = selection.catchupStart, requested.isFinite,
+              let start = selection.program?.startTimestamp, start.isFinite,
+              let end = selection.program?.endTimestamp, end.isFinite, end > start else { return nil }
+        self.start = start
+        self.end = end
+        self.streamStart = streamStart ?? floor(requested / 60) * 60
+    }
+
+    var duration: Double { end - start }
+
+    func elapsed(mediaTime: Double) -> Double {
+        guard mediaTime.isFinite else { return 0 }
+        return min(max(streamStart + mediaTime - start, 0), duration)
+    }
+
+    func timestamp(elapsed: Double) -> Double {
+        start + min(max(elapsed, 0), max(0, duration - 1))
+    }
+
+    func localPosition(elapsed: Double, seekable: [ClosedRange<Double>]) -> Double? {
+        let position = timestamp(elapsed: elapsed) - streamStart
+        guard position >= 0, seekable.contains(where: {
+            position >= $0.lowerBound && position < $0.upperBound
+        }) else { return nil }
+        return position
     }
 }

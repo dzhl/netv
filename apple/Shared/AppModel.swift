@@ -22,6 +22,8 @@ final class AppModel: ObservableObject {
     #if os(tvOS)
     @Published var playPauseRequest: UUID?
     @Published var playerActivity: UUID?
+    @Published var seekBackwardRequest: UUID?
+    @Published var seekForwardRequest: UUID?
     #endif
 
     // Carry the server's current quality decision across channel changes.
@@ -127,6 +129,34 @@ final class AppModel: ObservableObject {
     func playCatchup(_ channel: Channel, program: Program) {
         guard let start = program.startTimestamp else { return }
         selection = PlayerSelection(channel: channel, program: program, catchupStart: start)
+    }
+
+    func seekCatchup(
+        _ playing: PlayerSelection, to timestamp: Double, resume: Bool,
+        now: Double = Date().timeIntervalSince1970
+    ) throws {
+        guard selection?.id == playing.id else { return }
+        guard playing.isCatchup, timestamp.isFinite, playing.channel.catchupDays > 0 else {
+            throw APIError.server("This stream does not support archive seeking.")
+        }
+        if timestamp >= now - 30 {
+            play(playing.channel)
+            selection?.startPaused = !resume
+            return
+        }
+        let oldest = now - Double(playing.channel.catchupDays) * 86_400 + 60
+        let target = floor(max(timestamp, oldest))
+        guard let end = playing.program?.endTimestamp, target < end else {
+            throw APIError.server("This program is no longer available in the upstream archive.")
+        }
+        selection = PlayerSelection(
+            channel: playing.channel, program: playing.program,
+            catchupStart: target, startPaused: !resume
+        )
+    }
+
+    func keepArchiveAlive(sessionID: String) async throws {
+        try await client.keepArchiveAlive(server: server, sessionID: sessionID)
     }
 
     /// The program airing now, when the archive lets it restart from the beginning.
