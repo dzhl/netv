@@ -88,6 +88,8 @@ struct Channel: Decodable, Identifiable, Hashable {
     let name: String
     let icon: String
     let categoryIDs: [String]
+    /// Days of upstream archive; past programs within it can be watched from the start.
+    let catchupDays: Int
 
     var id: String { streamID.value }
 
@@ -96,6 +98,7 @@ struct Channel: Decodable, Identifiable, Hashable {
         case name
         case icon
         case categoryIDs = "category_ids"
+        case catchupDays = "catchup_days"
     }
 
     init(from decoder: Decoder) throws {
@@ -108,6 +111,14 @@ struct Channel: Decodable, Identifiable, Hashable {
             forKey: .categoryIDs
         ) ?? []
         categoryIDs = categories.map(\.value)
+        catchupDays = try container.decodeIfPresent(Int.self, forKey: .catchupDays) ?? 0
+    }
+
+    /// Whether a program starting at `start` is still in this channel's archive.
+    func canCatchUp(from start: Double?, now: Date = Date()) -> Bool {
+        guard catchupDays > 0, let start else { return false }
+        let now = now.timeIntervalSince1970
+        return start >= now - Double(catchupDays) * 86_400 && start < now
     }
 }
 
@@ -120,13 +131,38 @@ struct Program: Decodable, Hashable {
     let widthPercent: Double
     let startTimestamp: Double?
     let endTimestamp: Double?
+    /// The server confirmed this program can be watched from the upstream archive.
+    let catchup: Bool
 
     enum CodingKeys: String, CodingKey {
-        case title, desc, start, end
+        case title, desc, start, end, catchup
         case leftPercent = "left_pct"
         case widthPercent = "width_pct"
         case startTimestamp = "start_timestamp"
         case endTimestamp = "end_timestamp"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decode(String.self, forKey: .title)
+        desc = try container.decode(String.self, forKey: .desc)
+        start = try container.decode(String.self, forKey: .start)
+        end = try container.decode(String.self, forKey: .end)
+        leftPercent = try container.decode(Double.self, forKey: .leftPercent)
+        widthPercent = try container.decode(Double.self, forKey: .widthPercent)
+        startTimestamp = try container.decodeIfPresent(Double.self, forKey: .startTimestamp)
+        endTimestamp = try container.decodeIfPresent(Double.self, forKey: .endTimestamp)
+        catchup = try container.decodeIfPresent(Bool.self, forKey: .catchup) ?? false
+    }
+
+    /// Day and time, for listings that reach back past today.
+    var archiveLabel: String {
+        guard let startTimestamp else { return timeRange }
+        let startDate = Date(timeIntervalSince1970: startTimestamp)
+        let day = Calendar.current.isDateInToday(startDate)
+            ? "Today"
+            : startDate.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())
+        return "\(day), \(timeRange)"
     }
 
     var timeRange: String {
@@ -228,9 +264,22 @@ struct FlexibleID: Decodable, Hashable {
     }
 }
 
+struct CatchupListing: Decodable {
+    let days: Int
+    let programs: [Program]
+}
+
 struct PlayerSelection: Identifiable, Hashable {
     let channel: Channel
     let program: Program?
+    /// Unix start of an archived program played from its start; nil plays live.
+    var catchupStart: Double?
 
-    var id: String { channel.id }
+    var isCatchup: Bool { catchupStart != nil }
+
+    /// Distinct per archived program so switching between them restarts playback.
+    var id: String {
+        guard let catchupStart else { return channel.id }
+        return "\(channel.id)@\(Int(catchupStart))"
+    }
 }

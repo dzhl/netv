@@ -159,7 +159,7 @@
       <div class="flex-1 relative h-5">
         {% for marker in time_markers_mobile %}
         <div class="absolute top-0 h-full border-l border-gray-700 text-[10px] text-gray-400 pl-0.5"
-             style="left: {{ marker.left_pct }}%">
+             style="left: {{ marker.left_pct }}%" data-clock="{{ marker.timestamp }}">
           {{ marker.label }}
         </div>
         {% endfor %}
@@ -172,7 +172,7 @@
       <div class="flex-1 relative h-10">
         {% for marker in time_markers %}
         <div class="absolute top-0 h-full border-l border-gray-700 text-sm text-gray-400 pl-1"
-             style="left: {{ marker.left_pct }}%">
+             style="left: {{ marker.left_pct }}%" data-clock="{{ marker.timestamp }}">
           {{ marker.label }}
         </div>
         {% endfor %}
@@ -217,13 +217,14 @@
       <div class="compact-only-block flex-1 relative h-10 ml-1">
         {% if row.programs_mobile %}
         {% for prog in row.programs_mobile %}
-        <a href="/play/live/{{ row.channel.stream_id }}"
+        <a href="/play/live/{{ row.channel.stream_id }}{% if prog.catchup %}?start={{ prog.start_timestamp | int }}{% endif %}"
            class="absolute top-0.5 bottom-0.5 bg-gray-700 hover:bg-gray-600 rounded px-1 overflow-hidden
                   focusable border border-gray-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-gray-800"
            style="left: {{ prog.left_pct }}%; width: calc({{ prog.width_pct }}% - 4px);"
            tabindex="0" data-nav="epg" data-row="{{ row_idx }}" data-col="{{ loop.index0 }}"
+           data-start="{{ prog.start_timestamp }}" data-end="{{ prog.end_timestamp }}"
            title="{{ prog.title }}&#10;{{ prog.start }} - {{ prog.end }}&#10;{{ prog.desc }}">
-          <div class="text-[10px] font-medium truncate">{{ prog.title }}</div>
+          <div class="text-[10px] font-medium truncate">{% if prog.catchup %}<span class="text-blue-300" title="Watch from the start">&#8634;</span> {% endif %}{{ prog.title }}</div>
         </a>
         {% endfor %}
         {% else %}
@@ -237,13 +238,14 @@
       <div class="desktop-only-block flex-1 relative h-16 ml-1">
         {% if row.programs %}
         {% for prog in row.programs %}
-        <a href="/play/live/{{ row.channel.stream_id }}"
+        <a href="/play/live/{{ row.channel.stream_id }}{% if prog.catchup %}?start={{ prog.start_timestamp | int }}{% endif %}"
            class="absolute top-1 bottom-1 bg-gray-700 hover:bg-gray-600 rounded px-2 py-1 overflow-hidden
                   focusable border-2 border-transparent focus:border-blue-500 focus:bg-blue-900/50"
            style="left: {{ prog.left_pct }}%; width: calc({{ prog.width_pct }}% - 4px);"
            tabindex="0" data-nav="epg" data-row="{{ row_idx }}" data-col="{{ loop.index0 }}"
+           data-start="{{ prog.start_timestamp }}" data-end="{{ prog.end_timestamp }}"
            title="{{ prog.title }}&#10;{{ prog.start }} - {{ prog.end }}&#10;{{ prog.desc }}">
-          <div class="text-sm font-medium truncate">{{ prog.title }}</div>
+          <div class="text-sm font-medium truncate">{% if prog.catchup %}<span class="text-blue-300" title="Watch from the start">&#8634;</span> {% endif %}{{ prog.title }}</div>
           <div class="text-xs text-gray-400 truncate">{{ prog.desc }}</div>
         </a>
         {% endfor %}
@@ -317,6 +319,9 @@ const GUIDE_CONFIG = {
   setTimeout(() => window.location.reload(), msToNext);
 })();
 {% endif %}
+
+// Show clock times in the viewer's time zone rather than the server's
+localizeGuideTimes(document);
 
 // Initialize virtual scrolling if enabled and we have more than initial batch
 (function() {

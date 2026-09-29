@@ -370,7 +370,7 @@
   function savePosition() {
     if (castController?.active) return;
     const actualTime = video.currentTime + seekOffset;
-    if (!cfg.isVod || actualTime < 5) return;
+    if (!cfg.isVod || cfg.catchup || actualTime < 5) return;
     if (video.currentTime < 1 && seekOffset > 0) return;
     if (Math.abs(actualTime - lastSavedPosition) < 5) return;
     lastSavedPosition = actualTime;
@@ -523,12 +523,20 @@
   function setupLiveProgram() {
     if (cfg.isVod) return;
     const container = document.getElementById('progress-container');
+    const startOver = document.getElementById('start-over-btn');
+    startOver?.addEventListener('click', () => {
+      window.location.href = '/play/live/' + encodeURIComponent(cfg.streamId) +
+        '?start=' + Math.floor(programStart);
+    });
     // Wall-clock driven, so the bar keeps up while paused or stalled.
     const tick = () => {
       // Channels the guide knows nothing about stay off the timeline.
       if (programEnd && Date.now() / 1000 >= programEnd) refreshProgram();
       container?.classList.toggle('hidden', !hasLiveProgram());
       if (hasLiveProgram()) updateProgress();
+      // The upstream archive only reaches back catchupDays
+      const archiveStart = Date.now() / 1000 - cfg.catchupDays * 86400;
+      startOver?.classList.toggle('hidden', !hasLiveProgram() || programStart < archiveStart);
     };
     tick();
     setInterval(tick, 1000);
@@ -655,6 +663,13 @@
 
   async function handleSeekToPosition(targetTime) {
     if (!transcodeSessionId || seekInProgress) return false;
+    // Upstream archives can't be byte-seeked, so a server-side seek would
+    // re-read the recording from its start; stay within what's transcoded.
+    if (cfg.catchup) {
+      const end = seekOffset + Math.max(0, transcodedDuration - 2);
+      video.currentTime = Math.max(0, Math.min(targetTime, end) - seekOffset);
+      return true;
+    }
     seekInProgress = true;
     showLoading();
     error.classList.add('hidden');
@@ -730,7 +745,9 @@
     try {
       await cleanupTranscode();
       if (castController?.active) return;
-      let url = '/transcode/start?url=' + encodeURIComponent(cfg.rawUrl) + '&content_type=' + cfg.streamType;
+      // Archived programs are finite and seekable, so they play like a movie
+      const contentType = cfg.catchup ? 'movie' : cfg.streamType;
+      let url = '/transcode/start?url=' + encodeURIComponent(cfg.rawUrl) + '&content_type=' + contentType;
       if (cfg.seriesId) url += '&series_id=' + cfg.seriesId;
       if (cfg.episodeId) url += '&episode_id=' + cfg.episodeId;
       if (cfg.seriesName) url += '&series_name=' + encodeURIComponent(cfg.seriesName);
