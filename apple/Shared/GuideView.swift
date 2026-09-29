@@ -160,7 +160,6 @@ struct ChannelGuideView: View {
     @EnvironmentObject private var model: AppModel
     var selectedCategoryID: String? = nil
     @FocusState private var focusedChannelID: String?
-    @State private var catchupChannel: Channel?
 
     private var rowHeight: CGFloat { GuideMetrics.scaled(74) }
 
@@ -176,9 +175,6 @@ struct ChannelGuideView: View {
         .background(GuideTheme.background)
         .refreshable { await model.loadGuide() }
         .focusSection()
-        .sheet(item: $catchupChannel) { channel in
-            CatchupSheet(channel: channel)
-        }
 
     }
 
@@ -244,7 +240,7 @@ struct ChannelGuideView: View {
                             ForEach(rows) { row in
                                 Button {
                                     #if os(tvOS)
-                                    if model.selection?.channel.id == row.id {
+                                    if model.selection?.id == row.id {
                                         model.isPlayerExpanded = true
                                     } else {
                                         model.play(row)
@@ -258,19 +254,18 @@ struct ChannelGuideView: View {
                                         channelWidth: channelWidth,
                                         rowHeight: rowHeight,
                                         nowPosition: nowPosition(at: date),
-                                        isPlaying: model.selection?.channel.id == row.id
+                                        isPlaying: model.selection?.id == row.id
                                     )
                                 }
                                 .buttonStyle(GuideButtonStyle(
-                                    isSelected: model.selection?.channel.id == row.id,
+                                    isSelected: model.selection?.id == row.id,
                                     isFocused: focusedChannelID == row.id
                                 ))
-                                .catchupMenu(row: row, browse: { catchupChannel = row.channel })
                                 .id(row.id)
                                 .focused($focusedChannelID, equals: row.id)
                                 .accessibilityLabel("Watch \(row.channel.name)")
                                 .accessibilityValue(
-                                    model.selection?.channel.id == row.id ? "Now playing" : "Not playing"
+                                    model.selection?.id == row.id ? "Now playing" : "Not playing"
                                 )
                             }
                         }
@@ -281,7 +276,7 @@ struct ChannelGuideView: View {
                     #if os(tvOS)
                     .task(id: model.isPlayerExpanded) {
                         guard !model.isPlayerExpanded,
-                              let id = model.selection?.channel.id,
+                              let id = model.selection?.id,
                               rows.contains(where: { $0.id == id }) else { return }
                         scrollProxy.scrollTo(id, anchor: .center)
                         // Let the guide become enabled and its lazy row mount before focusing it.
@@ -462,7 +457,6 @@ struct GuideButtonStyle: ButtonStyle {
 #if os(iOS)
 private struct PhoneGuideView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var catchupChannel: Channel?
 
     var body: some View {
         ScrollView {
@@ -477,7 +471,6 @@ private struct PhoneGuideView: View {
                         PhoneChannelCard(row: row)
                     }
                     .buttonStyle(.plain)
-                    .catchupMenu(row: row, browse: { catchupChannel = row.channel })
                 }
             }
             .padding(.horizontal, 16)
@@ -485,9 +478,6 @@ private struct PhoneGuideView: View {
         }
         .navigationTitle("Live TV")
         .searchable(text: $model.query, prompt: "Channels and programs")
-        .sheet(item: $catchupChannel) { channel in
-            CatchupSheet(channel: channel)
-        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if model.isLoading {
@@ -588,138 +578,6 @@ struct LiveBadge: View {
                 .tracking(0.6)
         }
         .foregroundStyle(.white.opacity(0.8))
-    }
-}
-
-struct CatchupBadge: View {
-    var body: some View {
-        Label("CATCH-UP", systemImage: "clock.arrow.circlepath")
-            .font(.caption2.weight(.bold))
-            .tracking(0.6)
-            .foregroundStyle(.white.opacity(0.8))
-    }
-}
-
-private struct CatchupMenu: ViewModifier {
-    @EnvironmentObject private var model: AppModel
-    let row: ChannelRow
-    let browse: () -> Void
-
-    func body(content: Content) -> some View {
-        if row.channel.catchupDays > 0 {
-            content.contextMenu {
-                if let program = model.startOverProgram(for: row) {
-                    Button {
-                        model.playCatchup(row.channel, program: program)
-                    } label: {
-                        Label("Start Over", systemImage: "backward.end.fill")
-                    }
-                }
-                Button(action: browse) {
-                    Label("Catch Up…", systemImage: "clock.arrow.circlepath")
-                }
-                if model.selection?.channel.id == row.id, model.selection?.isCatchup == true {
-                    Button {
-                        model.play(row)
-                    } label: {
-                        Label("Watch Live", systemImage: "dot.radiowaves.left.and.right")
-                    }
-                }
-            }
-        } else {
-            content
-        }
-    }
-}
-
-extension View {
-    /// Start Over and Catch Up actions for channels whose upstream keeps an archive.
-    func catchupMenu(row: ChannelRow, browse: @escaping () -> Void) -> some View {
-        modifier(CatchupMenu(row: row, browse: browse))
-    }
-}
-
-/// Past programs still in a channel's archive, newest first.
-struct CatchupSheet: View {
-    @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
-    let channel: Channel
-
-    @State private var programs: [Program]?
-    @State private var errorMessage: String?
-
-    var body: some View {
-        NavigationStack {
-            Group {
-                if let errorMessage {
-                    ContentUnavailableView(
-                        "Catch Up Unavailable",
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(errorMessage)
-                    )
-                } else if let programs, programs.isEmpty {
-                    ContentUnavailableView(
-                        "Nothing to Catch Up On",
-                        systemImage: "clock.arrow.circlepath",
-                        description: Text("No earlier programs are listed for \(channel.name).")
-                    )
-                } else if let programs {
-                    List(Array(programs.enumerated()), id: \.offset) { _, program in
-                        Button {
-                            model.playCatchup(channel, program: program)
-                            dismiss()
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text(program.title)
-                                        .font(.headline)
-                                        .lineLimit(1)
-                                    if program.isCurrent {
-                                        Text("ON NOW")
-                                            .font(.caption2.weight(.bold))
-                                            .foregroundStyle(Theme.live)
-                                    }
-                                }
-                                Text(program.archiveLabel)
-                                    .font(.caption)
-                                    .foregroundStyle(Theme.secondaryText)
-                                if !program.desc.isEmpty {
-                                    Text(program.desc)
-                                        .font(.caption)
-                                        .foregroundStyle(Theme.secondaryText)
-                                        .lineLimit(2)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } else {
-                    ProgressView("Loading earlier programs…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-            .navigationTitle("Catch Up: \(channel.name)")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-            }
-        }
-        #if os(macOS)
-        .frame(minWidth: 420, minHeight: 480)
-        #endif
-        .task {
-            do {
-                programs = try await model.catchupPrograms(for: channel)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
     }
 }
 

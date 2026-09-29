@@ -110,36 +110,6 @@ final class AppModel: ObservableObject {
         selection = PlayerSelection(channel: row.channel, program: row.currentProgram)
     }
 
-    func play(_ channel: Channel) {
-        let row = channels.first { $0.id == channel.id }
-        selection = PlayerSelection(channel: channel, program: row?.currentProgram)
-    }
-
-    /// Restarts what the selected live channel is airing, when its archive allows.
-    var startOverForSelection: (() -> Void)? {
-        guard let selection, !selection.isCatchup,
-              let row = channels.first(where: { $0.id == selection.channel.id }),
-              let program = startOverProgram(for: row) else { return nil }
-        return { [weak self] in self?.playCatchup(row.channel, program: program) }
-    }
-
-    /// Plays an archived program from its start.
-    func playCatchup(_ channel: Channel, program: Program) {
-        guard let start = program.startTimestamp else { return }
-        selection = PlayerSelection(channel: channel, program: program, catchupStart: start)
-    }
-
-    /// The program airing now, when the archive lets it restart from the beginning.
-    func startOverProgram(for row: ChannelRow) -> Program? {
-        guard let program = row.programs.first(where: \.isCurrent),
-              row.channel.canCatchUp(from: program.startTimestamp) else { return nil }
-        return program
-    }
-
-    func catchupPrograms(for channel: Channel) async throws -> [Program] {
-        try await client.catchup(server: server, channelID: channel.id).programs
-    }
-
     func playerConfiguration(for selection: PlayerSelection) async throws -> PlaybackConfiguration {
         let previous = playbackStartTask
         let requestServer = server
@@ -159,7 +129,7 @@ final class AppModel: ObservableObject {
             }
             let configuration = try await client.playbackConfiguration(
                 server: requestServer, channelID: selection.channel.id,
-                bandwidthSaver: bandwidthSaver, catchupStart: selection.catchupStart
+                bandwidthSaver: bandwidthSaver
             )
             if let sessionID = configuration.transcodeSessionID {
                 playbackSessionToRelease = (requestServer, sessionID)

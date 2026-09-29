@@ -66,28 +66,6 @@ struct GuideDataChecks {
         precondition(groups[1].categoryIDs == ["news-1", "news-2"])
         precondition(Set(groups.map(\.id)).count == groups.count)
         precondition(GuideCategoryGroup.distinct([]).isEmpty)
-
-        precondition(!legacy.rows[0].channel.canCatchUp(from: now - 60), "Older servers report no archive")
-        precondition(!current.catchup)
-        let archived = try decoder.decode(GuideResponse.self, from: Data("""
-            {
-              "rows":[{"channel":{"stream_id":"7","name":"News","catchup_days":2},
-                       "programs":[{"title":"Earlier","desc":"","start":"09:00","end":"10:00",
-                                    "left_pct":0,"width_pct":20,"start_timestamp":\(now - 7200),
-                                    "end_timestamp":\(now - 3600),"catchup":true}]}],
-              "total":1
-            }
-            """.utf8))
-        let archive = archived.rows[0].channel
-        precondition(archive.catchupDays == 2 && archived.rows[0].programs[0].catchup)
-        precondition(archive.canCatchUp(from: now - 86_400))
-        precondition(!archive.canCatchUp(from: now - 3 * 86_400), "Programs older than the archive can't restart")
-        precondition(!archive.canCatchUp(from: now + 60) && !archive.canCatchUp(from: nil))
-
-        let live = PlayerSelection(channel: archive, program: nil)
-        let replay = PlayerSelection(channel: archive, program: nil, catchupStart: now - 7200)
-        precondition(!live.isCatchup && replay.isCatchup)
-        precondition(live.id == "7" && replay.id != live.id, "Archived playback must restart the player")
-        print("Guide checks passed: timestamps, clipping, distinct categories, catchup and legacy responses")
+        print("Guide checks passed: timestamps, clipping, distinct categories and legacy responses")
     }
 }

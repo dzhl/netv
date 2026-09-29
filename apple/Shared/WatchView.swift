@@ -107,9 +107,7 @@ struct WatchView: View {
 
     private var currentSelection: PlayerSelection? {
         guard let selection = model.selection else { return nil }
-        // Archived playback keeps the program it was started for.
-        guard !selection.isCatchup,
-              let row = model.channels.first(where: { $0.id == selection.channel.id }) else {
+        guard let row = model.channels.first(where: { $0.id == selection.id }) else {
             return selection
         }
         return PlayerSelection(channel: row.channel, program: row.currentProgram)
@@ -258,7 +256,7 @@ struct WatchView: View {
                                 .font(.system(size: GuideMetrics.fontSize(24), weight: .bold))
                                 .lineLimit(2)
                             HStack(spacing: 10) {
-                                if selection.isCatchup { CatchupBadge() } else { LiveBadge() }
+                                LiveBadge()
                                 if let program = selection.program {
                                     Text(program.timeRange)
                                         .font(.caption.weight(.medium))

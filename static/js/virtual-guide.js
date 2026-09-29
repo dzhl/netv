@@ -28,39 +28,6 @@ function escapeGuideHtml(str) {
                     .replace(/'/g, '&#39;');
 }
 
-// Times come from the server as Unix timestamps; show them in the viewer's zone.
-function guideClock(timestamp, fallback) {
-  if (!timestamp) return fallback || '';
-  return new Date(timestamp * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
-}
-
-function programTimes(prog) {
-  return `${guideClock(prog.start_timestamp, prog.start)} - ${guideClock(prog.end_timestamp, prog.end)}`;
-}
-
-// Server-rendered markup carries server-local clock labels; rewrite them.
-function localizeGuideTimes(root) {
-  root.querySelectorAll('[data-clock]').forEach((el) => {
-    el.textContent = guideClock(Number(el.dataset.clock), el.textContent.trim());
-  });
-  root.querySelectorAll('[data-start][data-end]').forEach((el) => {
-    const lines = (el.getAttribute('title') || '').split('\n');
-    if (lines.length < 2) return;
-    lines[1] = programTimes({start_timestamp: Number(el.dataset.start), end_timestamp: Number(el.dataset.end)});
-    el.setAttribute('title', lines.join('\n'));
-  });
-}
-
-// Programs still in the upstream archive open from their start.
-function programHref(ch, prog) {
-  const base = `/play/live/${ch.stream_id}`;
-  return prog.catchup ? `${base}?start=${Math.floor(prog.start_timestamp)}` : base;
-}
-
-function catchupMark(prog) {
-  return prog.catchup ? '<span class="text-blue-300" title="Watch from the start">&#8634;</span> ' : '';
-}
-
 class VirtualGuide {
   constructor(options) {
     const D = VIRTUAL_GUIDE_DEFAULTS;
@@ -589,13 +556,13 @@ class VirtualGuide {
     let programsDesktop = '';
     if (row.programs && row.programs.length > 0) {
       programsDesktop = row.programs.map((prog, pIdx) => `
-        <a href="${programHref(ch, prog)}"
+        <a href="/play/live/${ch.stream_id}"
            class="absolute top-1 bottom-1 bg-gray-700 hover:bg-gray-600 rounded px-2 py-1 overflow-hidden
                   focusable border-2 border-transparent focus:border-blue-500 focus:bg-blue-900/50"
            style="left: ${prog.left_pct}%; width: calc(${prog.width_pct}% - 4px);"
            tabindex="0" data-nav="epg" data-row="${index}" data-col="${pIdx}"
-           title="${escapeHtml(prog.title)}&#10;${programTimes(prog)}&#10;${escapeHtml(prog.desc)}">
-          <div class="text-sm font-medium truncate">${catchupMark(prog)}${escapeHtml(prog.title)}</div>
+           title="${escapeHtml(prog.title)}&#10;${prog.start} - ${prog.end}&#10;${escapeHtml(prog.desc)}">
+          <div class="text-sm font-medium truncate">${escapeHtml(prog.title)}</div>
           <div class="text-xs text-gray-400 truncate">${escapeHtml(prog.desc)}</div>
         </a>
       `).join('');
@@ -611,13 +578,13 @@ class VirtualGuide {
     let programsMobile = '';
     if (row.programs_mobile && row.programs_mobile.length > 0) {
       programsMobile = row.programs_mobile.map((prog, pIdx) => `
-        <a href="${programHref(ch, prog)}"
+        <a href="/play/live/${ch.stream_id}"
            class="absolute top-0.5 bottom-0.5 bg-gray-700 hover:bg-gray-600 rounded px-1 overflow-hidden
                   focusable border border-gray-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-gray-800"
            style="left: ${prog.left_pct}%; width: calc(${prog.width_pct}% - 4px);"
            tabindex="0" data-nav="epg" data-row="${index}" data-col="${pIdx}"
-           title="${escapeHtml(prog.title)}&#10;${programTimes(prog)}&#10;${escapeHtml(prog.desc)}">
-          <div class="text-[10px] font-medium truncate">${catchupMark(prog)}${escapeHtml(prog.title)}</div>
+           title="${escapeHtml(prog.title)}&#10;${prog.start} - ${prog.end}&#10;${escapeHtml(prog.desc)}">
+          <div class="text-[10px] font-medium truncate">${escapeHtml(prog.title)}</div>
         </a>
       `).join('');
     } else {
