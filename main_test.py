@@ -371,6 +371,30 @@ def test_live_page_close_force_stop_checks_owner(auth_client, owner, status):
         stop.assert_not_called()
 
 
+class TestLoadAllEpg:
+    def test_refetches_when_listings_ran_out(self, mock_deps):
+        import main
+
+        urls = [("http://epg", 30, "s")]
+        with (
+            patch("main.epg.has_programs_after", return_value=False),
+            patch("main._fetch_all_epg") as fetch,
+        ):
+            main.load_all_epg(urls)
+        fetch.assert_called_once_with(urls)
+
+    def test_skips_fetch_when_listings_are_current(self, mock_deps):
+        import main
+
+        with (
+            patch("main.epg.has_programs_after", return_value=True),
+            patch("main.epg.get_program_count", return_value=5),
+            patch("main._fetch_all_epg") as fetch,
+        ):
+            main.load_all_epg([("http://epg", 30, "s")])
+        fetch.assert_not_called()
+
+
 class TestSetup:
     """Tests for initial setup flow."""
 

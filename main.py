@@ -187,6 +187,7 @@ def _safe_float(value: float | str | None, default: float = 0.0) -> float:
 
 
 _epg_fetch_lock = threading.Lock()
+_EPG_MIN_LOOKAHEAD = timedelta(hours=6)
 
 
 @asynccontextmanager
@@ -291,22 +292,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # EPG scheduler
     scheduler_stop = threading.Event()
-    _last_triggered: dict[str, str] = {}  # source_id -> last triggered time
+    _last_triggered: dict[str, str] = {}  # source_id -> last triggered date and time
 
     def scheduler_loop():
         while not scheduler_stop.wait(30):  # Check every 30 seconds
             now = datetime.now()
             current_time = now.strftime("%H:%M")
+            # Include the date so a daily time fires again the next day
+            slot = now.strftime("%Y-%m-%d %H:%M")
             for source in get_sources():
                 if current_time in source.epg_schedule:
                     key = f"{source.id}_epg"
                     # Only trigger once per scheduled time
                     if (
-                        _last_triggered.get(source.id) != current_time
+                        _last_triggered.get(source.id) != slot
                         and key not in get_refresh_in_progress()
                     ):
                         log.info("Scheduled EPG refresh for %s at %s", source.name, current_time)
-                        _last_triggered[source.id] = current_time
+                        _last_triggered[source.id] = slot
                         get_refresh_in_progress().add(key)
 
                         def do_refresh(src: Source = source, k: str = key):
@@ -542,21 +545,25 @@ def _fetch_all_epg(epg_urls: list[tuple[str, int, str]]) -> int:
     return total
 
 
+def _epg_is_fresh() -> bool:
+    """True if the EPG still has listings a few hours ahead."""
+    return epg.has_programs_after(datetime.now(UTC) + _EPG_MIN_LOOKAHEAD)
+
+
 def load_all_epg(epg_urls: list[tuple[str, int, str]]) -> None:
-    """Load EPG into sqlite database if empty.
+    """Load EPG into sqlite database if it is empty or has run out of listings.
 
     Args:
         epg_urls: List of (url, timeout, source_id) tuples
     """
-    if epg.has_programs():
+    if _epg_is_fresh():
         log.info("EPG database has %d programs", epg.get_program_count())
         return
 
-    # No data - fetch synchronously
     with _epg_fetch_lock:
-        if epg.has_programs():
+        if _epg_is_fresh():
             return
-        log.info("No EPG data, fetching")
+        log.info("EPG data missing or stale, fetching")
         try:
             _fetch_all_epg(epg_urls)
         except Exception as e:

@@ -304,6 +304,15 @@ def has_programs() -> bool:
     return row is not None
 
 
+def has_programs_after(when: datetime) -> bool:
+    """Check if any program is still airing (or scheduled) after the given time."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT 1 FROM programs WHERE stop_ts > ? LIMIT 1", (when.timestamp(),)
+    ).fetchone()
+    return row is not None
+
+
 def get_program_count() -> int:
     """Get total program count."""
     conn = _get_conn()

@@ -290,6 +290,16 @@ class TestClear:
 class TestPrune:
     """Tests for prune operations."""
 
+    def test_has_programs_after(self, db):
+        now = datetime.now(UTC)
+        db.insert_programs(
+            [("ch1", "Show", now.timestamp(), (now + timedelta(hours=1)).timestamp(), "", "src1")]
+        )
+        db.commit()
+
+        assert db.has_programs_after(now)
+        assert not db.has_programs_after(now + timedelta(hours=2))
+
     def test_prune_old_programs(self, db):
         now = datetime.now(UTC)
         old = now - timedelta(days=2)
