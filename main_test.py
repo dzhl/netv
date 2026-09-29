@@ -881,6 +881,28 @@ class TestGuide:
         mobile = {p["title"]: p for p in rows[0]["programs_mobile"]}
         assert mobile["Earlier"]["catchup"] is True
         assert mobile["Earlier"]["start_timestamp"] == past.start.timestamp()
+        assert mobile["Earlier"]["end_timestamp"] == past.stop.timestamp()
+
+    def test_guide_page_exposes_timestamps_for_local_times(self, auth_client):
+        from epg import Program
+
+        now = datetime.now(UTC)
+        cache_module.get_cache()["live_categories"] = [{"category_id": "1", "category_name": "News"}]
+        cache_module.get_cache()["live_streams"] = [
+            {"stream_id": 1, "name": "News", "category_ids": ["1"], "epg_channel_id": "news"}
+        ]
+        program = Program("news", "Headlines", now - timedelta(minutes=5), now + timedelta(minutes=55))
+        with (
+            patch("main.epg.has_programs", return_value=True),
+            patch("main.epg.get_icons_batch", return_value={}),
+            patch("main.epg.get_programs_batch", return_value={"news": [program]}),
+        ):
+            html = auth_client.get("/guide?cats=1").text
+        window_start = now.replace(minute=0, second=0, microsecond=0)
+        assert f'data-clock="{window_start.timestamp()}"' in html
+        assert f'data-start="{program.start.timestamp()}"' in html
+        assert f'data-end="{program.stop.timestamp()}"' in html
+        assert "localizeGuideTimes(document)" in html
 
     def test_guide_uses_saved_filter(self, auth_client, tmp_path):
         user_dir = tmp_path / "users" / "testuser"

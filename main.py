@@ -739,6 +739,7 @@ async def guide_page(
         time_markers.append(
             {
                 "label": t_local.strftime("%H:%M"),
+                "timestamp": t.timestamp(),
                 "left_pct": (i * 30 / 180) * 100,
             }
         )
@@ -751,6 +752,7 @@ async def guide_page(
         time_markers_mobile.append(
             {
                 "label": t_local.strftime("%H:%M"),
+                "timestamp": t.timestamp(),
                 "left_pct": (i * 30 / 120) * 100,
             }
         )
@@ -1024,6 +1026,7 @@ def _build_guide_rows(
                         "left_pct": left_pct_m,
                         "width_pct": width_pct_m,
                         "start_timestamp": p.start.timestamp(),
+                        "end_timestamp": p.stop.timestamp(),
                         "catchup": can_catch_up,
                     }
                 )
