@@ -117,9 +117,17 @@ final class APIClient {
         return guide
     }
 
-    func playbackConfiguration(server: String, channelID: String, bandwidthSaver: Bool = false) async throws -> PlaybackConfiguration {
+    func catchup(server: String, channelID: String) async throws -> CatchupListing {
+        guard let baseURL = normalizedServerURL(server) else { throw APIError.invalidServer }
+        return try await get("api/live/catchup/\(channelID)", baseURL: baseURL)
+    }
+
+    func playbackConfiguration(
+        server: String, channelID: String, bandwidthSaver: Bool = false, catchupStart: Double? = nil
+    ) async throws -> PlaybackConfiguration {
+        let path = catchupStart.map { "play/live/\(channelID)?start=\(Int($0))" } ?? "play/live/\(channelID)"
         guard let baseURL = normalizedServerURL(server),
-              let playerPageURL = URL(string: "play/live/\(channelID)", relativeTo: baseURL) else {
+              let playerPageURL = URL(string: path, relativeTo: baseURL) else {
             throw APIError.invalidServer
         }
 
@@ -131,6 +139,9 @@ final class APIClient {
         }
         guard http.statusCode == 200 else {
             if http.statusCode == 401 { throw APIError.authenticationFailed }
+            if catchupStart != nil && http.statusCode == 404 {
+                throw APIError.server("This program is no longer available to watch from the start.")
+            }
             throw APIError.server("Unable to resolve this channel (\(http.statusCode)).")
         }
         guard let html = String(data: data, encoding: .utf8),
@@ -146,7 +157,8 @@ final class APIClient {
                 rawURL: rawURL,
                 sourceID: playerConfigString("sourceId", in: html) ?? "",
                 deinterlaceFallback: playerConfigBool("deinterlaceFallback", in: html) ?? true,
-                bandwidthSaver: bandwidthSaver
+                bandwidthSaver: bandwidthSaver,
+                archive: catchupStart != nil
             )
         }
 
@@ -233,7 +245,8 @@ final class APIClient {
         rawURL: URL,
         sourceID: String,
         deinterlaceFallback: Bool,
-        bandwidthSaver: Bool
+        bandwidthSaver: Bool,
+        archive: Bool = false
     ) async throws -> PlaybackConfiguration {
         var components = URLComponents(
             url: baseURL.appendingPathComponent("transcode/start"),
@@ -241,11 +254,12 @@ final class APIClient {
         )
         components?.queryItems = [
             URLQueryItem(name: "url", value: rawURL.absoluteString),
-            URLQueryItem(name: "content_type", value: "live"),
+            // Archived programs are finite recordings, so they play as seekable VOD.
+            URLQueryItem(name: "content_type", value: archive ? "movie" : "live"),
             URLQueryItem(name: "deinterlace_fallback", value: deinterlaceFallback ? "1" : "0"),
             URLQueryItem(name: "source_id", value: sourceID),
-            URLQueryItem(name: "bandwidth_saver", value: bandwidthSaver ? "true" : "false"),
-            URLQueryItem(name: "fast_start", value: "true"),
+            URLQueryItem(name: "bandwidth_saver", value: bandwidthSaver && !archive ? "true" : "false"),
+            URLQueryItem(name: "fast_start", value: archive ? "false" : "true"),
             // AVPlayer decodes Dolby Digital (Plus), so surround can pass through untouched.
             URLQueryItem(name: "audio_passthrough", value: "true")
         ]

@@ -52,6 +52,21 @@ struct PlayerView: View {
                         }
                     }
                     Spacer()
+                    if let startOver = model.startOverForSelection {
+                        Button(action: startOver) {
+                            Image(systemName: "backward.end.fill")
+                                .frame(width: 36, height: 36)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Start over")
+                    }
+                    if selection.isCatchup {
+                        Button("Live") { model.play(selection.channel) }
+                            .font(.caption.weight(.bold))
+                            .buttonStyle(.bordered)
+                            .tint(.white)
+                            .accessibilityLabel("Return to live")
+                    }
                     if let quality {
                         Text(quality)
                             .font(.caption.weight(.semibold))
@@ -83,7 +98,9 @@ struct PlayerView: View {
         .overlay(alignment: .bottom) {
             if let player {
                 MacControlBar(
-                    player: player, volume: $model.playbackVolume, airPlayActive: airPlayActive
+                    player: player, volume: $model.playbackVolume, airPlayActive: airPlayActive,
+                    isCatchup: selection.isCatchup, startOver: model.startOverForSelection,
+                    goLive: selection.isCatchup ? { model.play(selection.channel) } : nil
                 )
             }
         }
@@ -204,7 +221,8 @@ struct PlayerView: View {
                     // players for a quality change would drop the AirPlay route.
                     if airPlayActive { continue }
                     #endif
-                    guard let sessionID = activeSessionID else { continue }
+                    // Archived programs play as VOD, which takes no live quality feedback.
+                    guard let sessionID = activeSessionID, !selection.isCatchup else { continue }
                     // Pauses aren't stalls. Reporting healthy samples also resets the
                     // server's consecutive-poor-playback window and keeps it alive.
                     let health = sampler.sample(player: currentPlayer, item: item)
@@ -335,6 +353,9 @@ private struct MacControlBar: View {
     let player: AVPlayer
     @Binding var volume: Double
     let airPlayActive: Bool
+    let isCatchup: Bool
+    let startOver: (() -> Void)?
+    let goLive: (() -> Void)?
 
     @State private var isPlaying = true
     @State private var isHovering = false
@@ -376,11 +397,32 @@ private struct MacControlBar: View {
             .help(isPlaying ? "Pause" : "Play")
             .accessibilityLabel(isPlaying ? "Pause" : "Play")
 
-            HStack(spacing: 4) {
-                Circle().fill(.red).frame(width: 6, height: 6)
-                Text("LIVE").font(.caption2.weight(.bold))
+            if let startOver {
+                Button(action: startOver) {
+                    Image(systemName: "backward.end.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .help("Start over")
+                .accessibilityLabel("Start over")
             }
-            .accessibilityElement(children: .combine)
+
+            if isCatchup {
+                CatchupBadge()
+                if let goLive {
+                    Button("Go Live", action: goLive)
+                        .font(.caption2.weight(.bold))
+                        .buttonStyle(.plain)
+                        .help("Return to the live broadcast")
+                }
+            } else {
+                HStack(spacing: 4) {
+                    Circle().fill(.red).frame(width: 6, height: 6)
+                    Text("LIVE").font(.caption2.weight(.bold))
+                }
+                .accessibilityElement(children: .combine)
+            }
 
             Spacer(minLength: 8)
 
@@ -546,11 +588,15 @@ private struct TVControlBar: View {
                 .frame(width: expanded ? 36 : 22)
                 .accessibilityLabel(isPlaying ? "Playing" : "Paused")
 
-            HStack(spacing: 6) {
-                Circle().fill(.red).frame(width: expanded ? 10 : 7, height: expanded ? 10 : 7)
-                Text("LIVE").font((expanded ? Font.callout : .caption2).weight(.bold))
+            if selection.isCatchup {
+                CatchupBadge()
+            } else {
+                HStack(spacing: 6) {
+                    Circle().fill(.red).frame(width: expanded ? 10 : 7, height: expanded ? 10 : 7)
+                    Text("LIVE").font((expanded ? Font.callout : .caption2).weight(.bold))
+                }
+                .accessibilityElement(children: .combine)
             }
-            .accessibilityElement(children: .combine)
 
             if expanded {
                 VStack(alignment: .leading, spacing: 2) {

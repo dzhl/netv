@@ -97,6 +97,7 @@ from xtream import XtreamClient
 
 import auth
 import casting
+import catchup
 import epg
 import ffmpeg_command
 import ffmpeg_session
@@ -197,12 +198,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Initialize EPG database
     epg.init(CACHE_DIR)
 
-    # Prune expired EPG data (keep 24h buffer for "what was just on")
-    cutoff = datetime.now(UTC) - timedelta(hours=24)
-    pruned = epg.prune_old_programs(cutoff)
-    if pruned:
-        log.info("Pruned %d expired EPG programs", pruned)
-
     # Initialize transcoding module with settings callback
     ffmpeg_command.init(
         load_server_settings,
@@ -273,6 +268,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Start all preloads in parallel (EPG waits for live data internally)
     def load_all():
         load_live()
+        # Pruning needs the live streams to know how far back archives reach
+        _prune_epg()
         # EPG needs epg_urls from live data, so run after
         load_epg_data()
 
@@ -536,14 +533,18 @@ def _fetch_all_epg(epg_urls: list[tuple[str, int, str]]) -> int:
             _, count = future.result()
             total += count
 
-    # Prune expired programs (keep 24h buffer)
-    cutoff = datetime.now(UTC) - timedelta(hours=24)
-    pruned = epg.prune_old_programs(cutoff)
-    if pruned:
-        log.info("Pruned %d expired EPG programs", pruned)
+    _prune_epg()
 
     log.info("EPG fetch complete: %d programs total", total)
     return total
+
+
+def _prune_epg() -> None:
+    """Drop listings older than the longest catchup archive (at least 24h)."""
+    cutoff = datetime.now(UTC) - catchup.history(get_cache().get("live_streams") or [])
+    pruned = epg.prune_old_programs(cutoff)
+    if pruned:
+        log.info("Pruned %d expired EPG programs", pruned)
 
 
 def _epg_is_fresh() -> bool:
@@ -971,6 +972,7 @@ def _build_guide_rows(
 
     # Build rows
     window_end_mobile = window_start + timedelta(hours=2)
+    now = datetime.now(UTC)
     grid_data = []
 
     for idx, (s, epg_id) in enumerate(zip(slice_streams, epg_ids, strict=False), start=start_idx):
@@ -981,10 +983,13 @@ def _build_guide_rows(
             "icon": icon,
             "epg_id": epg_id,
             "category_ids": [str(category_id) for category_id in (s.get("category_ids") or [])],
+            "catchup_days": catchup.archive_days(s),
         }
         row = {"channel": ch, "programs": [], "programs_mobile": [], "index": idx}
 
         for p in programs_map.get(epg_id, []):
+            # Ended programs still in the archive can be watched from the start
+            can_catch_up = p.stop <= now and catchup.can_play(s, p.start, now)
             p_start = max(p.start, window_start)
             p_end = min(p.stop, window_end)
             start_mins = (p_start - window_start).total_seconds() / 60
@@ -1001,6 +1006,7 @@ def _build_guide_rows(
                     "end_timestamp": p.stop.timestamp(),
                     "left_pct": left_pct,
                     "width_pct": width_pct,
+                    "catchup": can_catch_up,
                 }
             )
             # Mobile: 2-hour window
@@ -1017,6 +1023,8 @@ def _build_guide_rows(
                         "end": p.stop.strftime("%H:%M"),
                         "left_pct": left_pct_m,
                         "width_pct": width_pct_m,
+                        "start_timestamp": p.start.timestamp(),
+                        "catchup": can_catch_up,
                     }
                 )
 
@@ -1496,6 +1504,8 @@ class PlayerInfo:
     deinterlace_fallback: bool = True  # Used when probe is skipped
     source_id: str = ""  # Source ID for stream limit tracking
     category_ids: list[str] | None = None  # Category IDs for live streams (access check)
+    catchup_days: int = 0  # Days of upstream archive for live streams (0 = none)
+    catchup_start: float = 0.0  # Unix start of the archived program being played
 
 
 def _get_episode_desc(ep: dict) -> str:
@@ -1528,17 +1538,35 @@ def _get_current_program(epg_id: str) -> dict | None:
     }
 
 
-def _get_live_player_info(stream_id: str) -> PlayerInfo:
-    """Get player info for live stream."""
-    _ensure_live_cache()
-    stream = next(
+def _find_live_stream(stream_id: str) -> dict | None:
+    return next(
         (s for s in get_cache()["live_streams"] if str(s.get("stream_id")) == stream_id),
         None,
     )
+
+
+def _live_epg_id(stream: dict) -> str:
+    """A stream's EPG id, falling back to one assigned to it in a shared playlist."""
+    epg_id = stream.get("epg_channel_id") or ""
+    if epg_id:
+        return epg_id
+    key = playlists.stream_key(stream)
+    streams = get_cache().get("live_streams") or []
+    for playlist in playlists.load():
+        for resolved in playlists.resolve(playlist, streams):
+            if playlists.stream_key(resolved) == key and resolved.get("epg_channel_id"):
+                return resolved["epg_channel_id"]
+    return ""
+
+
+def _get_live_player_info(stream_id: str) -> PlayerInfo:
+    """Get player info for live stream."""
+    _ensure_live_cache()
+    stream = _find_live_stream(stream_id)
     if not stream:
         return PlayerInfo()
 
-    info = PlayerInfo(channel_name=stream.get("name", ""))
+    info = PlayerInfo(channel_name=stream.get("name", ""), catchup_days=catchup.archive_days(stream))
 
     if stream.get("direct_url"):
         info.url = stream["direct_url"]
@@ -1562,12 +1590,51 @@ def _get_live_player_info(stream_id: str) -> PlayerInfo:
             info.deinterlace_fallback = source.get("deinterlace_fallback", True)
 
     # Look up current program from EPG
-    program = _get_current_program(stream.get("epg_channel_id") or "")
+    program = _get_current_program(_live_epg_id(stream))
     if program:
         info.program_title = program["title"]
         info.program_desc = program["desc"]
         info.program_start = program["start"]
         info.program_end = program["end"]
+    return info
+
+
+def _find_archived_program(stream: dict, start: datetime) -> epg.Program | None:
+    """The EPG program airing at ``start`` on a stream's channel."""
+    epg_id = _live_epg_id(stream)
+    if not epg_id:
+        return None
+    programs = epg.get_programs_in_range(
+        epg_id, start, start + timedelta(seconds=1), stream.get("source_id", "")
+    )
+    return next((p for p in programs if p.start <= start < p.stop), None)
+
+
+def _get_catchup_player_info(stream_id: str, start_ts: float) -> PlayerInfo:
+    """Player info for an archived program, played from its start."""
+    info = _get_live_player_info(stream_id)
+    stream = _find_live_stream(stream_id) if info.url else None
+    if not stream:
+        return PlayerInfo()
+    try:
+        start = datetime.fromtimestamp(start_ts, UTC)
+    except (OverflowError, OSError, ValueError):
+        start = None
+    if start is None or not catchup.can_play(stream, start):
+        raise HTTPException(404, "This program is not available to watch from the start")
+
+    program = _find_archived_program(stream, start)
+    stop = program.stop if program else start + timedelta(hours=1)
+    source_id = stream.get("source_id", "")
+    client = get_xtream_client_by_source(source_id)
+    tz = catchup.server_timezone(source_id, client.get_server_info) if client else UTC
+    info.url = catchup.timeshift_url(stream, start, catchup.duration_minutes(start, stop), tz)
+    info.is_m3u = False
+    info.catchup_start = start.timestamp()
+    info.program_title = program.title if program else ""
+    info.program_desc = program.desc if program else ""
+    info.program_start = start.timestamp()
+    info.program_end = stop.timestamp()
     return info
 
 
@@ -1699,11 +1766,14 @@ async def player_page(
     user: Annotated[dict, Depends(require_auth)],
     ext: str = "",
     series_id: int | None = None,
+    start: float | None = Query(default=None, description="Catchup: unix start of a past program"),
 ):
     """Render player page for live/movie/series stream."""
     username = user.get("sub", "")
     next_episode_url = None
-    if stream_type == "live":
+    if stream_type == "live" and start is not None:
+        info = await asyncio.to_thread(_get_catchup_player_info, stream_id, start)
+    elif stream_type == "live":
         info = await asyncio.to_thread(_get_live_player_info, stream_id)
     elif stream_type == "movie":
         info = await asyncio.to_thread(_get_movie_player_info, stream_id, ext)
@@ -1744,12 +1814,13 @@ async def player_page(
 
     log.info("Play %s/%s: %s", stream_type, stream_id, info.url)
 
+    is_catchup = bool(info.catchup_start)
     server_settings = load_server_settings()
     user_settings = load_user_settings(username)
     transcode_mode = server_settings.get("transcode_mode", "auto")
     is_https = request.url.scheme == "https" or "https" in request.headers.get("x-forwarded-proto", "").lower() or "https" in request.headers.get("x-forwarded-scheme", "").lower()
     if transcode_mode == "auto":
-        needs_transcode = info.is_m3u or ext in ("mkv", "mp4", "avi", "wmv", "flv")
+        needs_transcode = info.is_m3u or is_catchup or ext in ("mkv", "mp4", "avi", "wmv", "flv")
         mixed_content = is_https and info.url.startswith("http://")
         # Pause/rewind requires a server-side buffer; route live through a
         # local HLS session (stream copy when codecs allow) when DVR is on.
@@ -1798,6 +1869,8 @@ async def player_page(
             "deinterlace_fallback": info.deinterlace_fallback,
             "source_id": info.source_id,
             "content_access": _get_content_access(username),
+            "catchup_days": info.catchup_days,
+            "catchup_start": info.catchup_start,
         },
     )
 
@@ -1817,13 +1890,55 @@ async def live_program_api(
         )
         if not stream or not _live_stream_filter(user.get("sub", ""))(stream):
             raise HTTPException(404, "Stream not found")
-        return _get_current_program(stream.get("epg_channel_id") or "")
+        return _get_current_program(_live_epg_id(stream))
 
     program = await asyncio.to_thread(lookup)
     return JSONResponse(
         program or {"title": "", "desc": "", "start": 0.0, "end": 0.0},
         headers={"Cache-Control": "no-store"},
     )
+
+
+@app.get("/api/live/catchup/{stream_id:path}")
+async def live_catchup_api(
+    stream_id: str,
+    user: Annotated[dict, Depends(require_auth)],
+):
+    """Programs still in a channel's archive, newest first, including the one airing now."""
+
+    def lookup() -> dict:
+        _ensure_live_cache()
+        stream = _find_live_stream(stream_id)
+        if not stream or not _live_stream_filter(user.get("sub", ""))(stream):
+            raise HTTPException(404, "Stream not found")
+        days = catchup.archive_days(stream)
+        epg_id = _live_epg_id(stream)
+        if not days or not epg_id:
+            return {"days": days, "programs": []}
+        now = datetime.now(UTC)
+        programs = epg.get_programs_in_range(
+            epg_id, now - timedelta(days=days), now, stream.get("source_id", "")
+        )
+        return {
+            "days": days,
+            "programs": [
+                {
+                    "title": p.title,
+                    "desc": p.desc,
+                    "start": p.start.astimezone().strftime("%H:%M"),
+                    "end": p.stop.astimezone().strftime("%H:%M"),
+                    "start_timestamp": p.start.timestamp(),
+                    "end_timestamp": p.stop.timestamp(),
+                    "left_pct": 0,
+                    "width_pct": 0,
+                    "catchup": True,
+                }
+                for p in reversed(programs)
+                if catchup.can_play(stream, p.start, now)
+            ],
+        }
+
+    return JSONResponse(await asyncio.to_thread(lookup), headers={"Cache-Control": "no-store"})
 
 
 @app.get("/search", response_class=HTMLResponse)

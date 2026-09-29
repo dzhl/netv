@@ -328,6 +328,167 @@ def test_live_program_api_unknown_stream_is_not_found(auth_client):
     assert response.status_code == 404
 
 
+def _archive_stream(**overrides):
+    stream = {
+        "stream_id": "src1_42",
+        "name": "Channel",
+        "source_id": "src1",
+        "source_type": "xtream",
+        "source_url": "http://upstream.test",
+        "source_username": "user",
+        "source_password": "pass",
+        "epg_channel_id": "ch1",
+        "tv_archive": 1,
+        "tv_archive_duration": 2,
+    }
+    stream.update(overrides)
+    return stream
+
+
+def test_catchup_player_info_builds_timeshift_url():
+    from zoneinfo import ZoneInfo
+
+    from epg import Program
+
+    import main
+
+    start = (datetime.now(UTC) - timedelta(hours=3)).replace(second=0, microsecond=0)
+    program = Program("ch1", "Earlier news", start, start + timedelta(minutes=30))
+    client = MagicMock()
+    client.get_server_info.return_value = {"server_info": {"timezone": "Europe/Amsterdam"}}
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": [_archive_stream()]}),
+        patch("main.get_xtream_client_by_source", return_value=client),
+        patch("epg.get_programs_in_range", return_value=[program]),
+        patch("catchup._tz_cache", {}),
+    ):
+        info = main._get_catchup_player_info("src1_42", start.timestamp())
+    local = start.astimezone(ZoneInfo("Europe/Amsterdam")).strftime("%Y-%m-%d:%H-%M")
+    assert info.url == f"http://upstream.test/timeshift/user/pass/30/{local}/42.ts"
+    assert info.catchup_start == start.timestamp()
+    assert info.catchup_days == 2
+    assert info.program_title == "Earlier news"
+    assert info.program_end == program.stop.timestamp()
+
+
+def test_catchup_player_info_rejects_programs_outside_archive():
+    from fastapi import HTTPException
+
+    import main
+
+    too_old = datetime.now(UTC) - timedelta(days=3)
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": [_archive_stream()]}),
+        patch("epg.get_programs_in_range", return_value=[]),
+        pytest.raises(HTTPException) as excinfo,
+    ):
+        main._get_catchup_player_info("src1_42", too_old.timestamp())
+    assert excinfo.value.status_code == 404
+
+
+def test_catchup_player_page_plays_archive_as_vod(auth_client):
+    from main import PlayerInfo
+
+    info = PlayerInfo(
+        url="http://upstream.test/timeshift/user/pass/30/2026-01-01:10-00/42.ts",
+        channel_name="Channel",
+        catchup_days=2,
+        catchup_start=1767261600.0,
+    )
+    with patch("main._get_catchup_player_info", return_value=info) as get_info:
+        response = auth_client.get("/play/live/src1_42?start=1767261600")
+    get_info.assert_called_once_with("src1_42", 1767261600.0)
+    assert response.status_code == 200
+    assert "catchup: true" in response.text
+    assert 'id="go-live-btn"' in response.text
+    assert 'id="jump-btn"' in response.text
+    assert 'id="start-over-btn"' not in response.text
+
+
+def test_live_player_offers_start_over_with_archive(auth_client):
+    from main import PlayerInfo
+
+    info = PlayerInfo(url="https://example.test/live.ts", channel_name="Channel", catchup_days=1)
+    with patch("main._get_live_player_info", return_value=info):
+        response = auth_client.get("/play/live/test")
+    assert "catchup: false" in response.text
+    assert "catchupDays: 1" in response.text
+    assert 'id="start-over-btn"' in response.text
+
+
+def test_catchup_api_lists_archived_programs_newest_first(auth_client):
+    from epg import Program
+
+    now = datetime.now(UTC)
+    programs = [
+        Program("ch1", "Too old", now - timedelta(days=2, hours=1), now - timedelta(days=2) + timedelta(minutes=1)),
+        Program("ch1", "Morning", now - timedelta(hours=5), now - timedelta(hours=4)),
+        Program("ch1", "On now", now - timedelta(minutes=10), now + timedelta(minutes=20)),
+    ]
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": [_archive_stream()]}),
+        patch("epg.get_programs_in_range", return_value=programs),
+    ):
+        response = auth_client.get("/api/live/catchup/src1_42")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["days"] == 2
+    assert [p["title"] for p in payload["programs"]] == ["On now", "Morning"]
+    assert payload["programs"][1]["start_timestamp"] == programs[1].start.timestamp()
+
+
+def test_catchup_api_without_archive_is_empty(auth_client):
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": [_archive_stream(tv_archive=0)]}),
+    ):
+        response = auth_client.get("/api/live/catchup/src1_42")
+    assert response.json() == {"days": 0, "programs": []}
+
+
+def test_catchup_api_uses_playlist_guide_assignment(auth_client):
+    from epg import Program
+
+    now = datetime.now(UTC)
+    earlier = Program("assigned", "Morning", now - timedelta(hours=5), now - timedelta(hours=4))
+    stream = _archive_stream(epg_channel_id="")
+    playlist = {
+        "id": "pl1",
+        "channels": [
+            {"stream_id": "src1_42", "source_id": "src1", "name": "Channel", "epg_channel_id": "assigned"}
+        ],
+    }
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": [stream]}),
+        patch("main.playlists.load", return_value=[playlist]),
+        patch("epg.get_programs_in_range", return_value=[earlier]) as get_programs,
+    ):
+        response = auth_client.get("/api/live/catchup/src1_42")
+    assert [p["title"] for p in response.json()["programs"]] == ["Morning"]
+    assert get_programs.call_args.args[0] == "assigned"
+
+
+def test_catchup_player_page_rejects_invalid_start(auth_client):
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": [_archive_stream()]}),
+        patch("epg.get_programs_in_range", return_value=[]),
+    ):
+        assert auth_client.get("/play/live/src1_42?start=1e300").status_code == 404
+
+
+def test_catchup_api_unknown_stream_is_not_found(auth_client):
+    with (
+        patch("main._ensure_live_cache"),
+        patch("main.get_cache", return_value={"live_streams": []}),
+    ):
+        assert auth_client.get("/api/live/catchup/missing").status_code == 404
+
+
 def test_adaptive_start_uses_shared_backend(auth_client):
     result = {
         "session_id": "shared",
@@ -683,6 +844,43 @@ class TestGuide:
         assert listing["end"] == "01:00"
         assert listing["left_pct"] == 0
         assert listing["width_pct"] == pytest.approx(100 / 3)
+
+    def test_guide_rows_flag_archived_programs(self, auth_client):
+        from epg import Program
+
+        now = datetime.now(UTC)
+        cache_module.get_cache()["live_streams"] = [
+            {
+                "stream_id": 1,
+                "name": "News",
+                "category_ids": ["1"],
+                "epg_channel_id": "news",
+                "source_type": "xtream",
+                "tv_archive": 1,
+                "tv_archive_duration": 1,
+            },
+            {"stream_id": 2, "name": "Other", "category_ids": ["1"], "epg_channel_id": "other"},
+        ]
+        past = Program("news", "Earlier", now - timedelta(hours=1), now - timedelta(minutes=5))
+        current = Program("news", "Now", now - timedelta(minutes=5), now + timedelta(hours=1))
+        other = Program("other", "Earlier", past.start, past.stop)
+
+        with (
+            patch("main.epg.get_icons_batch", return_value={}),
+            patch(
+                "main.epg.get_programs_batch",
+                return_value={"news": [past, current], "other": [other]},
+            ),
+        ):
+            rows = auth_client.get("/api/guide/rows?cats=1&offset=-1").json()["rows"]
+
+        assert rows[0]["channel"]["catchup_days"] == 1
+        assert [p["catchup"] for p in rows[0]["programs"]] == [True, False]
+        assert rows[1]["channel"]["catchup_days"] == 0
+        assert [p["catchup"] for p in rows[1]["programs"]] == [False]
+        mobile = {p["title"]: p for p in rows[0]["programs_mobile"]}
+        assert mobile["Earlier"]["catchup"] is True
+        assert mobile["Earlier"]["start_timestamp"] == past.start.timestamp()
 
     def test_guide_uses_saved_filter(self, auth_client, tmp_path):
         user_dir = tmp_path / "users" / "testuser"
@@ -1337,7 +1535,11 @@ class TestPlaylists:
 
         channels = auth_client.get(f"/api/playlists/{playlist['id']}").json()["channels"]
         assert channels[0]["epg_channel_id"] == "guide.one"
-        rows = auth_client.get(f"/api/guide/rows?cats={playlist['category_id']}").json()["rows"]
+        with (
+            patch("main.epg.get_icons_batch", return_value={}),
+            patch("main.epg.get_programs_batch", return_value={}),
+        ):
+            rows = auth_client.get(f"/api/guide/rows?cats={playlist['category_id']}").json()["rows"]
         assert rows[0]["channel"]["epg_id"] == "guide.one"
 
     def test_epg_channel_search(self, auth_client):

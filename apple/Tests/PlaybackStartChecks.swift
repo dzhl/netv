@@ -20,8 +20,12 @@ final class APIClient {
     static var failRelease = false
     static var saverResponse = false
     static var requestedSaver: [Bool] = []
-    func playbackConfiguration(server: String, channelID: String, bandwidthSaver: Bool) async throws -> PlaybackConfiguration {
+    static var requestedCatchup: [Double?] = []
+    func playbackConfiguration(
+        server: String, channelID: String, bandwidthSaver: Bool, catchupStart: Double?
+    ) async throws -> PlaybackConfiguration {
         Self.requestedSaver.append(bandwidthSaver)
+        Self.requestedCatchup.append(catchupStart)
         Self.starts += 1
         let id = "session-\(Self.starts)"
         Self.active.insert(id)
@@ -35,6 +39,9 @@ final class APIClient {
     }
     func stopTranscode(server: String, sessionID: String) async {
         try? await releaseTranscode(server: server, sessionID: sessionID)
+    }
+    func catchup(server: String, channelID: String) async throws -> CatchupListing {
+        CatchupListing(days: 0, programs: [])
     }
     func validateSession(server: String) async throws -> Bool { false }
     func login(server: String, username: String, password: String) async throws -> Bool { true }
@@ -108,7 +115,19 @@ struct PlaybackStartChecks {
         precondition(!model.bandwidthSaver, "Late fallback must not affect the new session")
         await model.stopPlayback(sessionID: restored.transcodeSessionID!)
         precondition(APIClient.active.isEmpty)
-        print("Playback startup checks passed: cancellation, rapid tuning, failed release, recovery")
+        precondition(APIClient.requestedCatchup.allSatisfy { $0 == nil }, "Live tuning must not request the archive")
+
+        let replay = PlayerSelection(channel: c.channel, program: nil, catchupStart: 1_700_000_000)
+        model.selection = replay
+        let archived = try await model.playerConfiguration(for: replay)
+        precondition(APIClient.requestedCatchup.last == 1_700_000_000, "Catchup must request its program start")
+        model.selection = c
+        let live = try await model.playerConfiguration(for: c)
+        precondition(APIClient.requestedCatchup.last == .some(nil), "Going live must leave the archive")
+        precondition(APIClient.active == [live.transcodeSessionID!], "Leaving catchup must release its session")
+        precondition(archived.transcodeSessionID != live.transcodeSessionID)
+        await model.stopPlayback(sessionID: live.transcodeSessionID!)
+        print("Playback startup checks passed: cancellation, rapid tuning, failed release, recovery, catchup")
     }
 
     @MainActor
