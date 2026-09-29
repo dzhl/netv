@@ -300,6 +300,31 @@ class TestPrune:
         assert db.has_programs_after(now)
         assert not db.has_programs_after(now + timedelta(hours=2))
 
+    def test_search_channels_ranks_channels_with_listings_first(self, db):
+        now = datetime.now(UTC)
+        db.insert_channel("alpha.one", "XX| ALPHA ONE", "src1")
+        db.insert_channel("XX-Alpha One", "XX| ALPHA ONE HD", "src1")
+        db.insert_channel("beta.one", "XX| BETA", "src1")
+        db.insert_programs(
+            [
+                (
+                    "XX-Alpha One",
+                    "Show",
+                    now.timestamp(),
+                    (now + timedelta(hours=1)).timestamp(),
+                    "",
+                    "src1",
+                )
+            ]
+        )
+        db.commit()
+
+        results = db.search_channels(["ALPHA", "ONE"])
+
+        assert [r["id"] for r in results] == ["XX-Alpha One", "alpha.one"]
+        assert [r["has_listings"] for r in results] == [True, False]
+        assert db.search_channels([]) == []
+
     def test_prune_old_programs(self, db):
         now = datetime.now(UTC)
         old = now - timedelta(days=2)

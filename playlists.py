@@ -219,6 +219,14 @@ def resolve_channel(entry: dict, streams: list[dict]) -> dict | None:
     return stream
 
 
+def with_entry_epg(entry: dict, stream: dict) -> dict:
+    """Use the entry's EPG id when the stream has none, so the guide can show listings."""
+    epg_id = entry.get("epg_channel_id") or ""
+    if epg_id and not stream.get("epg_channel_id"):
+        return {**stream, "epg_channel_id": epg_id}
+    return stream
+
+
 def resolve(playlist: dict, streams: list[dict]) -> list[dict]:
     """Return the playlist's available streams in playlist order, without duplicates."""
     resolved: list[dict] = []
@@ -231,7 +239,7 @@ def resolve(playlist: dict, streams: list[dict]) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        resolved.append(stream)
+        resolved.append(with_entry_epg(entry, stream))
     return resolved
 
 

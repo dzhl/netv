@@ -2886,8 +2886,15 @@ def _playlist_payload(
         stream = playlists.resolve_channel(entry, streams)
         if stream_allowed is not None and (stream is None or not stream_allowed(stream)):
             continue
-        channel = playlists.summarize(stream, category_names) if stream else dict(entry)
+        channel = (
+            playlists.summarize(playlists.with_entry_epg(entry, stream), category_names)
+            if stream
+            else dict(entry)
+        )
         channel["available"] = stream is not None
+        # Only streams without their own EPG id take the entry's guide channel
+        if stream is not None:
+            channel["guide_assignable"] = not stream.get("epg_channel_id")
         channels.append(channel)
     return {
         "id": playlist["id"],
@@ -2955,6 +2962,18 @@ async def search_playlist_channels(
     )
     categories = [{"category_id": cid, "category_name": name} for cid, name in names.items()]
     return {"results": results, "categories": categories}
+
+
+@app.get("/api/playlists/epg-channels")
+async def search_playlist_epg_channels(
+    _user: Annotated[dict, Depends(require_admin)],
+    q: str = "",
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    """Guide channels an admin can assign to a playlist entry that has no listings."""
+    terms = playlists.normalize(q) or [q.strip()]
+    results = await asyncio.to_thread(epg.search_channels, terms, limit)
+    return {"results": results}
 
 
 @app.post("/api/playlists/match")

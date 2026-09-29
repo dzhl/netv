@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import contextlib
 import gzip
@@ -311,6 +312,37 @@ def has_programs_after(when: datetime) -> bool:
         "SELECT 1 FROM programs WHERE stop_ts > ? LIMIT 1", (when.timestamp(),)
     ).fetchone()
     return row is not None
+
+
+def search_channels(terms: list[str], limit: int = 20) -> list[dict[str, Any]]:
+    """Find EPG channels whose id or name contains every term.
+
+    Channels with upcoming listings come first.
+    """
+    terms = [t for t in terms if t]
+    if not terms:
+        return []
+    where = " AND ".join("(c.id LIKE ? OR c.name LIKE ?)" for _ in terms)
+    params: list[Any] = []
+    for t in terms:
+        like = f"%{t}%"
+        params += [like, like]
+    now = datetime.now(UTC).timestamp()
+    conn = _get_conn()
+    rows = conn.execute(
+        f"""
+        SELECT c.id, c.name, EXISTS(
+            SELECT 1 FROM programs p WHERE p.channel_id = c.id AND p.stop_ts > ?
+        ) AS has_listings
+        FROM channels c WHERE {where}
+        ORDER BY has_listings DESC, length(c.id)
+        LIMIT ?
+        """,  # noqa: S608 - only placeholders are interpolated
+        [now, *params, limit],
+    ).fetchall()
+    return [
+        {"id": r["id"], "name": r["name"], "has_listings": bool(r["has_listings"])} for r in rows
+    ]
 
 
 def get_program_count() -> int:

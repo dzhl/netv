@@ -217,6 +217,14 @@
       const meta = ch.available === false ? 'Not in current channel data' : (ch.category || '');
       info.append(el('div', 'truncate text-xs ' + (ch.available === false ? 'text-yellow-500' : 'text-gray-400'), meta));
       row.append(info);
+      if (ch.guide_assignable) {
+        const guide = el('button', 'text-xs px-1 whitespace-nowrap ' +
+          (ch.epg_channel_id ? 'text-gray-400 hover:text-white' : 'text-yellow-500 hover:text-yellow-300'),
+          ch.epg_channel_id ? 'Guide ✓' : 'No guide');
+        guide.title = ch.epg_channel_id ? 'Guide: ' + ch.epg_channel_id : 'Assign guide listings';
+        guide.onclick = () => assignGuide(ch);
+        row.append(guide);
+      }
       const up = el('button', 'text-xs px-1 text-gray-400 hover:text-white', '▲');
       const down = el('button', 'text-xs px-1 text-gray-400 hover:text-white', '▼');
       const remove = el('button', 'text-xs px-1 text-gray-400 hover:text-red-400', '✕');
@@ -245,6 +253,27 @@
       if (dragIndex !== null) moveChannel(dragIndex, current.channels.length - 1);
     });
     list.append(tail);
+  }
+
+  async function assignGuide(ch) {
+    const defaultQuery = String(ch.name || '').replace(/^[^|]{1,12}\|\s*/, '').replace(/[^\w\s&+]/g, ' ').trim();
+    const q = prompt('Search guide listings for "' + ch.name + '"', defaultQuery);
+    if (q === null) return;
+    let results = [];
+    try {
+      results = (await api('GET', '/api/playlists/epg-channels?q=' + encodeURIComponent(q))).results;
+    } catch (err) { alert(err.message); return; }
+    const lines = results.map((r, i) =>
+      (i + 1) + '. ' + r.name + '  [' + r.id + ']' + (r.has_listings ? '' : '  (no current listings)'));
+    const message = (lines.length ? lines.join('\n') : 'No guide channels matched.') +
+      '\n\nEnter a number or a guide id (empty to clear):';
+    const answer = prompt(message, ch.epg_channel_id || '');
+    if (answer === null) return;
+    const trimmed = answer.trim();
+    const n = Number(trimmed);
+    ch.epg_channel_id = Number.isInteger(n) && n >= 1 && n <= results.length ? results[n - 1].id : trimmed;
+    setDirty(true);
+    renderChannels();
   }
 
   function moveChannel(from, to) {

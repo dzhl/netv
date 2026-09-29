@@ -1263,6 +1263,24 @@ class TestPlaylists:
             {"stream_id": "42", "name": "Gone", "source_id": "s", "epg_channel_id": "", "available": False}
         ]
 
+    def test_assigned_guide_survives_round_trip_and_feeds_guide(self, auth_client):
+        playlist = self._create(auth_client, ids=(1,))
+        channels = auth_client.get(f"/api/playlists/{playlist['id']}").json()["channels"]
+        assert channels[0]["guide_assignable"] is True
+        channels[0]["epg_channel_id"] = "guide.one"
+        auth_client.put(f"/api/playlists/{playlist['id']}", json={"channels": channels})
+
+        channels = auth_client.get(f"/api/playlists/{playlist['id']}").json()["channels"]
+        assert channels[0]["epg_channel_id"] == "guide.one"
+        rows = auth_client.get(f"/api/guide/rows?cats={playlist['category_id']}").json()["rows"]
+        assert rows[0]["channel"]["epg_id"] == "guide.one"
+
+    def test_epg_channel_search(self, auth_client):
+        with patch("main.epg.search_channels", return_value=[]) as search:
+            resp = auth_client.get("/api/playlists/epg-channels?q=XX| ALPHA ONE HD")
+        assert resp.status_code == 200
+        search.assert_called_once_with(["ALPHA", "ONE"], 20)
+
     def test_match_and_search(self, auth_client):
         matches = auth_client.post("/api/playlists/match", json={"lines": ["ESPN", ""]}).json()["matches"]
         assert [(m["query"], m["candidates"][0]["stream_id"]) for m in matches] == [("ESPN", "2")]

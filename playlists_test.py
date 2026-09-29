@@ -112,6 +112,22 @@ def test_resolve_keeps_sources_apart():
     assert [s["name"] for s in playlists.resolve(playlist, streams)] == ["BBC", "CNN"]
 
 
+def test_resolve_uses_entry_epg_only_when_stream_has_none():
+    streams = [
+        {"stream_id": 1, "name": "Alpha", "source_id": "a", "epg_channel_id": ""},
+        {"stream_id": 2, "name": "Beta", "source_id": "a", "epg_channel_id": "beta.guide"},
+    ]
+    playlist = {
+        "channels": [
+            {"stream_id": "1", "name": "Alpha", "source_id": "a", "epg_channel_id": "alpha.guide"},
+            {"stream_id": "2", "name": "Beta", "source_id": "a", "epg_channel_id": "old.beta"},
+        ]
+    }
+    resolved = playlists.resolve(playlist, streams)
+    assert [s["epg_channel_id"] for s in resolved] == ["alpha.guide", "beta.guide"]
+    assert streams[0]["epg_channel_id"] == ""
+
+
 def test_resolve_prefers_epg_over_reused_id():
     streams = [
         {"stream_id": 1, "name": "Other", "source_id": "a", "epg_channel_id": ""},
