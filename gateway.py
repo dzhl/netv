@@ -312,6 +312,31 @@ def _visible_streams(
         streams = [
             stream for stream in streams if category_id in stream.public["category_ids"]
         ]
+    settings = cache.load_user_settings(username)
+    if settings.get("sort_live_by_views", True):
+        view_counts = cache.load_live_view_counts(username)
+        if view_counts:
+            if category_id is None:
+                category_order: dict[str, int] = {}
+                for stream in streams:
+                    primary_category = str(stream.public.get("category_id", ""))
+                    category_order.setdefault(primary_category, len(category_order))
+                streams.sort(
+                    key=lambda stream: (
+                        category_order[str(stream.public.get("category_id", ""))],
+                        -view_counts.get(
+                            cache.live_stream_key(stream.source_id, stream.upstream_id),
+                            0,
+                        ),
+                    )
+                )
+            else:
+                streams.sort(
+                    key=lambda stream: -view_counts.get(
+                        cache.live_stream_key(stream.source_id, stream.upstream_id),
+                        0,
+                    )
+                )
     return streams
 
 
@@ -513,6 +538,12 @@ async def live_stream(request: Request, stream_path: str) -> Response:
     stream = snapshot.streams_by_id.get(stream_id)
     if stream is None or stream not in _visible_streams(username, snapshot):
         raise HTTPException(404, "Stream not found")
+    await asyncio.to_thread(
+        cache.record_live_view,
+        username,
+        stream.source_id,
+        stream.upstream_id,
+    )
     if _upscale_enabled():
         settings = cache.load_server_settings()
         source = next(

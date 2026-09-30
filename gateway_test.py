@@ -216,6 +216,53 @@ def test_player_api_exposes_local_live_catalog(gateway_client):
     ]
 
 
+def test_player_api_orders_most_viewed_streams_within_category(gateway_client):
+    client, snapshot = gateway_client
+    second = GatewayStream(
+        local_id=42,
+        source_id="src_1",
+        source_type="xtream",
+        upstream_id="654",
+        direct_url="",
+        access_group_ids=("src_1_news",),
+        public={
+            **snapshot.streams[0].public,
+            "num": 2,
+            "name": "News Two",
+            "stream_id": 42,
+        },
+    )
+    snapshot.streams.append(second)
+    snapshot.streams_by_id[42] = second
+    cache.record_live_view("player", "src_1", "654")
+
+    response = client.get(
+        "/player_api.php",
+        params={
+            "username": "player",
+            "password": "local-pass",
+            "action": "get_live_streams",
+            "category_id": "src_1_news",
+        },
+    )
+
+    assert [stream["stream_id"] for stream in response.json()] == [42, 41]
+
+    settings = cache.load_user_settings("player")
+    settings["sort_live_by_views"] = False
+    cache.save_user_settings("player", settings)
+    response = client.get(
+        "/player_api.php",
+        params={
+            "username": "player",
+            "password": "local-pass",
+            "action": "get_live_streams",
+            "category_id": "src_1_news",
+        },
+    )
+    assert [stream["stream_id"] for stream in response.json()] == [41, 42]
+
+
 def test_playlist_contains_only_local_playback_urls(gateway_client):
     client, _ = gateway_client
     response = client.get(
@@ -430,6 +477,7 @@ def test_live_stream_proxies_resolved_upstream(gateway_client, monkeypatch: pyte
     fake_xtream.build_stream_url.assert_called_once_with("live", 987, "ts")
     assert open_mock.call_args.args[0].endswith("/987.ts")
     upstream.close.assert_called_once()
+    assert cache.load_live_view_counts("player") == {"src_1:987": 1}
 
 
 def test_live_stream_enforces_category_restrictions(

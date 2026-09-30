@@ -59,6 +59,7 @@ through their IPTV providers.
 - **Search** across all content (supports regex)
 - **Favorites** with drag-and-drop ordering
 - **Playlists** - Put your favorite content in playlists and organize them your way. Set them up on the web and they show up everywhere
+- **Personalized guide ordering** - Most-played content rises within each category by default
 - **Resume playback** for VOD content
 - **Responsive** - works on desktop, tablet, mobile
 - **Keyboard navigation** - 10-foot UI friendly

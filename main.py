@@ -68,8 +68,10 @@ from cache import (
     get_watch_position,
     hidden_source_ids,
     load_file_cache,
+    load_live_view_counts,
     load_server_settings,
     load_user_settings,
+    record_live_view,
     refresh_encoders,
     save_file_cache,
     save_logo,
@@ -807,9 +809,18 @@ def _get_guide_streams(cats: str, username: str) -> tuple[list[dict], list[str],
 
     stream_allowed = _live_stream_filter(username)
     cat_order = {c: i for i, c in enumerate(ordered_cats)}
+    user_settings = load_user_settings(username)
+    view_counts = (
+        load_live_view_counts(username)
+        if user_settings.get("sort_live_by_views", True)
+        else {}
+    )
 
     def stream_sort_key(s: dict) -> int:
         return _guide_section_rank(s, cat_order, len(ordered_cats))
+
+    def view_count(s: dict) -> int:
+        return view_counts.get(playlists.stream_key(s), 0)
 
     playlist_ids = [c for c in ordered_cats if playlists.is_playlist_id(c)]
     category_cats = selected_cats.difference(playlist_ids)
@@ -818,7 +829,7 @@ def _get_guide_streams(cats: str, username: str) -> tuple[list[dict], list[str],
         for s in all_streams
         if any(str(c) in category_cats for c in (s.get("category_ids") or [])) and stream_allowed(s)
     ]
-    streams.sort(key=stream_sort_key)
+    streams.sort(key=lambda s: (stream_sort_key(s), -view_count(s)))
     if not playlist_ids:
         return streams, ordered_cats, selected_cats
 
@@ -847,7 +858,14 @@ def _get_guide_streams(cats: str, username: str) -> tuple[list[dict], list[str],
             placement[key] = rank
 
     merged = []
-    for key in sorted(placement, key=placement.__getitem__):
+    for key in sorted(
+        placement,
+        key=lambda key: (
+            placement[key][0],
+            -view_counts.get(key, 0),
+            placement[key][1],
+        ),
+    ):
         s = stream_by_key[key]
         if key in memberships:
             s = {**s, "category_ids": [*(s.get("category_ids") or []), *memberships[key]]}
@@ -1823,6 +1841,9 @@ async def player_page(
 
     log.info("Play %s/%s: %s", stream_type, stream_id, info.url)
 
+    if stream_type == "live":
+        await asyncio.to_thread(record_live_view, username, info.source_id, stream_id)
+
     is_catchup = bool(info.catchup_start)
     server_settings = load_server_settings()
     user_settings = load_user_settings(username)
@@ -2535,6 +2556,7 @@ async def settings_page(request: Request, user: Annotated[dict, Depends(require_
             # User settings
             "captions_enabled": user_settings.get("captions_enabled", False),
             "virtual_scroll": user_settings.get("virtual_scroll", True),
+            "sort_live_by_views": user_settings.get("sort_live_by_views", True),
             "live_categories": live_categories,
             "vod_categories": vod_categories,
             "series_categories": series_categories,
@@ -3023,7 +3045,7 @@ def cast_control(data: CastCommand, user: Annotated[dict, Depends(require_cast_a
 
 @app.get("/api/user-prefs")
 async def get_user_prefs(user: Annotated[dict, Depends(require_auth)]):
-    """Get user preferences (favorites, cc_lang, cc_style, cast_host, virtual_scroll)."""
+    """Get user preferences."""
     username = user.get("sub", "")
     settings = load_user_settings(username)
     return {
@@ -3032,6 +3054,7 @@ async def get_user_prefs(user: Annotated[dict, Depends(require_auth)]):
         "cc_style": settings.get("cc_style", {}),
         "cast_host": settings.get("cast_host", ""),
         "virtual_scroll": settings.get("virtual_scroll", True),
+        "sort_live_by_views": settings.get("sort_live_by_views", True),
     }
 
 
@@ -3046,6 +3069,8 @@ async def save_user_prefs(
     if len(body) > 64 * 1024:  # 64KB limit
         raise HTTPException(400, "Request too large")
     data = json.loads(body)
+    if "sort_live_by_views" in data and not isinstance(data["sort_live_by_views"], bool):
+        raise HTTPException(400, "sort_live_by_views must be a boolean")
     settings = load_user_settings(username)
     for key in (
         "favorites",
@@ -3053,6 +3078,7 @@ async def save_user_prefs(
         "cc_style",
         "cast_host",
         "virtual_scroll",
+        "sort_live_by_views",
         "guide_selected_cats",
     ):
         if key in data:

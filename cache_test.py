@@ -121,6 +121,7 @@ class TestUserSettings:
         assert settings["guide_filter"] == []
         assert settings["captions_enabled"] is True
         assert settings["watch_history"] == {}
+        assert settings["sort_live_by_views"] is True
 
     def test_save_and_load_user_settings(self, cache_module):
         settings = {"guide_filter": ["cat1", "cat2"], "captions_enabled": False}
@@ -141,6 +142,16 @@ class TestUserSettings:
         cache_module.save_watch_position("user1", "http://video.url", 960.0, 1000.0)
         entry = cache_module.get_watch_position("user1", "http://video.url")
         assert entry is None  # Should be reset
+
+    def test_live_views_are_counted_by_source_and_stream(self, cache_module):
+        assert cache_module.record_live_view("user1", "source-a", 7) == 1
+        assert cache_module.record_live_view("user1", "source-a", 7) == 2
+        assert cache_module.record_live_view("user1", "source-b", 7) == 1
+
+        assert cache_module.load_live_view_counts("user1") == {
+            "source-a:7": 2,
+            "source-b:7": 1,
+        }
 
 
 class TestSource:

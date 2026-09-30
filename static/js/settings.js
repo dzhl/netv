@@ -451,16 +451,24 @@
   // ============================================================
 
   function setupGuideSettings() {
-    const virtualScrollCb = document.getElementById('virtual-scroll');
-    if (virtualScrollCb) {
-      virtualScrollCb.addEventListener('change', async function() {
+    [
+      ['virtual-scroll', 'virtual_scroll'],
+      ['sort-live-by-views', 'sort_live_by_views']
+    ].forEach(([id, preference]) => {
+      const checkbox = document.getElementById(id);
+      if (!checkbox) return;
+      checkbox.addEventListener('change', async function() {
         await saveWithFeedback(
           '/api/user-prefs',
-          { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({virtual_scroll: this.checked}) },
+          {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({[preference]: this.checked})
+          },
           getFeedbackEl(this)
         );
       });
-    }
+    });
   }
 
   // ============================================================

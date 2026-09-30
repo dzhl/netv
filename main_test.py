@@ -131,6 +131,21 @@ def test_web_player_includes_resolution_badge(auth_client):
     assert placement.parents == {"cast-overlay": "player-container", "cast-dialog": "player-container"}
 
 
+def test_live_player_records_view(auth_client):
+    from main import PlayerInfo
+
+    info = PlayerInfo(
+        url="https://example.test/live.m3u8",
+        channel_name="Test",
+        source_id="source-a",
+    )
+    with patch("main._get_live_player_info", return_value=info):
+        response = auth_client.get("/play/live/7")
+
+    assert response.status_code == 200
+    assert cache_module.load_live_view_counts("testuser") == {"source-a:7": 1}
+
+
 @pytest.mark.parametrize("path", ["devices", "status"])
 def test_cast_requires_authentication(client, path):
     assert client.get(f"/api/cast/{path}").status_code == 401
@@ -1127,6 +1142,7 @@ class TestSettings:
         with patch("main.load_file_cache", return_value=None):
             resp = auth_client.get("/settings")
             assert resp.status_code == 200
+            assert 'id="sort-live-by-views" checked' in resp.text
 
     def test_settings_guide_filter(self, auth_client):
         resp = auth_client.post(
@@ -1258,14 +1274,28 @@ class TestUserPrefs:
         data = resp.json()
         assert "favorites" in data
         assert "cc_lang" in data
+        assert data["sort_live_by_views"] is True
 
     def test_save_user_prefs(self, auth_client):
         resp = auth_client.post(
             "/api/user-prefs",
-            json={"cc_lang": "eng", "cast_host": "192.168.1.100"},
+            json={
+                "cc_lang": "eng",
+                "cast_host": "192.168.1.100",
+                "sort_live_by_views": False,
+            },
         )
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
+        assert auth_client.get("/api/user-prefs").json()["sort_live_by_views"] is False
+
+    def test_view_sorting_preference_requires_boolean(self, auth_client):
+        resp = auth_client.post(
+            "/api/user-prefs",
+            json={"sort_live_by_views": "false"},
+        )
+
+        assert resp.status_code == 400
 
 
 class TestWatchPosition:
@@ -1540,6 +1570,32 @@ class TestPlaylists:
         payload = auth_client.get(f"/api/guide/rows?cats={playlist['category_id']}").json()
 
         assert [r["channel"]["stream_id"] for r in payload["rows"]] == [2, 3, 1]
+
+    def test_guide_rows_order_most_viewed_streams_within_category(self, auth_client):
+        cache_module.record_live_view("testuser", "s", 3)
+        cache_module.record_live_view("testuser", "s", 3)
+
+        payload = auth_client.get("/api/guide/rows?cats=1,2&exact=1").json()
+
+        assert [r["channel"]["stream_id"] for r in payload["rows"]] == [1, 3, 2]
+
+    def test_guide_rows_order_most_viewed_streams_within_playlist(self, auth_client):
+        playlist = self._create(auth_client, ids=(2, 3, 1))
+        cache_module.record_live_view("testuser", "s", 1)
+
+        payload = auth_client.get(f"/api/guide/rows?cats={playlist['category_id']}").json()
+
+        assert [r["channel"]["stream_id"] for r in payload["rows"]] == [1, 2, 3]
+
+    def test_guide_rows_preserve_order_when_view_sorting_is_disabled(self, auth_client):
+        cache_module.record_live_view("testuser", "s", 3)
+        settings = cache_module.load_user_settings("testuser")
+        settings["sort_live_by_views"] = False
+        cache_module.save_user_settings("testuser", settings)
+
+        payload = auth_client.get("/api/guide/rows?cats=2&exact=1").json()
+
+        assert [r["channel"]["stream_id"] for r in payload["rows"]] == [2, 3]
 
     def test_guide_page_defaults_to_playlists_then_filter(self, auth_client):
         playlist = self._create(auth_client)

@@ -135,6 +135,14 @@
       </label>
       <p class="text-xs text-gray-400 mt-1 ml-8">When enabled, only visible rows are loaded as you scroll. Disable for smoother scrolling with fewer channels.</p>
     </div>
+    <div class="mb-4">
+      <label class="flex items-center gap-3 cursor-pointer">
+        <input type="checkbox" name="sort_live_by_views" id="sort-live-by-views" {% if sort_live_by_views %}checked{% endif %}
+               class="w-5 h-5 rounded bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+        <span>Move most-played content to the top of each category</span>
+      </label>
+      <p class="text-xs text-gray-400 mt-1 ml-8">Ordering is personalized from your playback history while category order stays unchanged.</p>
+    </div>
   </div>
 
   <!-- Closed Captions settings -->

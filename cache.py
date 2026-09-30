@@ -124,6 +124,7 @@ LOGO_MAX_SIZE = 1024 * 1024  # 1MB max logo size
 # In-memory cache
 _cache: dict[str, Any] = {}
 _cache_lock = threading.Lock()
+_live_view_lock = threading.Lock()
 
 
 def _parse_json_file(path: str) -> tuple[Any, float] | None:
@@ -565,6 +566,7 @@ def load_user_settings(username: str) -> dict[str, Any]:
     data.setdefault("cc_lang", "")
     data.setdefault("cc_style", {})
     data.setdefault("cast_host", "")
+    data.setdefault("sort_live_by_views", True)
     return data
 
 
@@ -573,7 +575,50 @@ def save_user_settings(username: str, settings: dict[str, Any]) -> None:
     _validate_username(username)
     user_dir = USERS_DIR / username
     user_dir.mkdir(exist_ok=True)
-    (user_dir / "settings.json").write_text(json.dumps(settings, indent=2))
+    atomic_write_json(user_dir / "settings.json", settings)
+
+
+def live_stream_key(source_id: str, stream_id: str | int) -> str:
+    """Build the source-qualified key used for per-user live view counts."""
+    return f"{source_id or ''}:{stream_id}"
+
+
+def _load_live_view_counts(username: str) -> dict[str, int]:
+    path = USERS_DIR / username / "live_views.json"
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text())
+    counts = data.get("counts") if isinstance(data, dict) else None
+    if not isinstance(counts, dict) or any(
+        not isinstance(key, str)
+        or isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        for key, value in counts.items()
+    ):
+        raise ValueError("Invalid live view counts")
+    return counts
+
+
+def load_live_view_counts(username: str) -> dict[str, int]:
+    """Load source-qualified live view counts for a user."""
+    _validate_username(username)
+    with _live_view_lock:
+        return _load_live_view_counts(username)
+
+
+def record_live_view(username: str, source_id: str, stream_id: str | int) -> int:
+    """Increment and return a user's view count for a live stream."""
+    _validate_username(username)
+    key = live_stream_key(source_id, stream_id)
+    with _live_view_lock:
+        counts = _load_live_view_counts(username)
+        counts[key] = counts.get(key, 0) + 1
+        atomic_write_json(
+            USERS_DIR / username / "live_views.json",
+            {"counts": counts},
+        )
+        return counts[key]
 
 
 def get_watch_position(username: str, stream_url: str) -> dict[str, Any] | None:
